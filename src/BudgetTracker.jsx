@@ -57,7 +57,7 @@ const fileToBase64 = f => new Promise((res, rej) => {
 });
 
 // ─── App ──────────────────────────────────────────────────────────────────────
-export default function App() {
+export default function BudgetTracker() {
   const [step, setStep] = useState("upload");
   const [txs, setTxs] = useState([]);
   const [month, setMonth] = useState(new Date().getMonth());
