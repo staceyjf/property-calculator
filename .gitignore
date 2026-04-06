@@ -1,0 +1,29 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Vite build output
+dist/
+dist-ssr/
+
+# Environment variables — never commit these
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Personal financial data
+*.xlsx
+*.xls
