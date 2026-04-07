@@ -56,6 +56,79 @@ function parseUpCSV(text) {
   return txs;
 }
 
+// ─── AMP CSV parser ───────────────────────────────────────────────────────────
+const AMP_MONTHS = { Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12 };
+
+function parseAMPDate(str) {
+  // "06-Apr-26" → "2026-04-06"
+  const m = str.match(/^(\d{2})-([A-Za-z]{3})-(\d{2})$/);
+  if (!m) return str;
+  const day = m[1];
+  const mon = String(AMP_MONTHS[m[2]] || 1).padStart(2, "0");
+  const yr  = `20${m[3]}`;
+  return `${yr}-${mon}-${day}`;
+}
+
+function extractAMPPayee(desc) {
+  return desc
+    .replace(/^PENDING TRANSACTION - /, "")
+    .replace(/^Purchase - /, "")
+    .replace(/^Direct Entry (?:Debit|Credit) Item Ref:\s+\S+\s+/, "")
+    .replace(/^Internet banking (?:scheduled )?(?:bill payment|external transfer)\s+\S+(?:\s+\S+)?\s*-\s*/, "")
+    .replace(/^(?:Withdrawal|Refund) - /, "")
+    .replace(/^Transfer (?:to|from) - /, "")
+    .replace(/\s{2,}[A-Z][A-Z &'*]+\s+AU\(\d{2}\/\d{2}\)\s*$/, "") // strip "  LOCATION  AU(DD/MM)"
+    .trim();
+}
+
+function parseAMPCSV(text) {
+  const lines = text.split(/\r?\n/);
+  // Find the row with the real column headers
+  const headerIdx = lines.findIndex(l => /^Date[,\t]Description/i.test(l.trim()));
+  if (headerIdx === -1) return null; // not AMP format
+
+  const csvBody = lines.slice(headerIdx).join("\n");
+  const result = Papa.parse(csvBody, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: h => h.trim(),
+  });
+
+  const txs = [];
+  for (const row of result.data) {
+    const desc = (row.Description || "").trim();
+    if (!desc) continue;
+    if (/^PENDING/i.test(desc)) continue;                          // pending, will settle later
+    if (/Transfer from/i.test(desc)) continue;                     // incoming money
+    if (/Inward swift/i.test(desc)) continue;                      // incoming wire
+    if (/QANTAS MONEY CC/i.test(desc)) continue;                   // credit card repayment
+    if (/Transfer to PayID Superhero/i.test(desc)) continue;       // investment transfer
+    if (/Transfer to andrew fanner/i.test(desc)) continue;         // internal transfer
+    if (/Transfer to PayID S J FANNER$/i.test(desc)) continue;     // unlabelled internal transfer
+
+    const amtStr = (row.Amount || "").replace(/[$,]/g, "");
+    const amt    = parseFloat(amtStr);
+    if (isNaN(amt) || amt >= 0) continue; // expenses are negative
+
+    const payee = extractAMPPayee(desc);
+    let category = null;
+    for (const [key, cat] of Object.entries(PAYEE_MAPPINGS)) {
+      if (desc.toLowerCase().includes(key.toLowerCase())) { category = cat; break; }
+    }
+
+    txs.push({
+      date:       parseAMPDate((row.Date || "").trim()),
+      payee,
+      amount:     Math.abs(amt),
+      upCategory: "",
+      category,
+      source:     "AMP",
+      needsReview: !category,
+    });
+  }
+  return txs;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt  = n => "$" + Math.round(n || 0).toLocaleString();
 const fmtD = n => "$" + (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -89,10 +162,12 @@ export default function BudgetTracker() {
       if (name.endsWith(".csv")) {
         setLog(l => [...l, `📄 Parsing ${file.name}…`]);
         const text = await file.text();
-        const rows = parseUpCSV(text);
+        const isAMP = /^Transaction history/i.test(text.trimStart());
+        const rows  = isAMP ? parseAMPCSV(text) : parseUpCSV(text);
+        const label = isAMP ? "AMP" : "Up Bank";
         const uncat = rows.filter(r => !r.category).length;
         setLog(l => [...l,
-          `✅ Up Bank: ${rows.length} expenses parsed`,
+          `✅ ${label}: ${rows.length} expenses parsed`,
           uncat ? `⚠️  ${uncat} need manual category` : `✅ All auto-categorised`
         ]);
         all = [...all, ...rows];
@@ -306,9 +381,9 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         >
           <div style={{ fontSize:34, marginBottom:10 }}>📂</div>
           <div style={{ fontSize:15, fontWeight:700, color:C.blue, marginBottom:6 }}>Drop files here or click to browse</div>
-          <div style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Up Bank CSV &nbsp;·&nbsp; AMP Bank PDF</div>
+          <div style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Up Bank CSV &nbsp;·&nbsp; AMP CSV or PDF</div>
           <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
-            {["📄 up_2026-03-15.csv","📑 Amp_3_months.pdf"].map(f => (
+            {["📄 up_2026-03-15.csv","📄 amp-6-months.csv","📑 Amp_3_months.pdf"].map(f => (
               <div key={f} style={{ background:"#091828", border:"1px solid #1a3050", borderRadius:7, padding:"5px 12px", fontSize:11, color:"#4a80b0" }}>{f}</div>
             ))}
           </div>
@@ -318,7 +393,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         <div style={{ marginTop:14, padding:"12px 16px", background:"#06101c", borderRadius:10, fontSize:11, color:C.muted, lineHeight:1.9 }}>
           <strong style={{ color:"#4a7a9a" }}>Getting your files:</strong><br />
           <strong>Up Bank:</strong> App → Profile → Export transactions → CSV<br />
-          <strong>AMP:</strong> myAMP.com.au → Accounts → Statements → Download PDF
+          <strong>AMP:</strong> myAMP.com.au → Accounts → Transaction history → Export CSV (or PDF)
         </div>
       </div>
     </div>
