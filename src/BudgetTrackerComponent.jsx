@@ -56,6 +56,76 @@ function parseUpCSV(text) {
   return txs;
 }
 
+// ─── AMP CSV parser ───────────────────────────────────────────────────────────
+const AMP_MONTHS = { Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12 };
+
+function parseAMPDate(str) {
+  const m = str.match(/^(\d{2})-([A-Za-z]{3})-(\d{2})$/);
+  if (!m) return str;
+  return `20${m[3]}-${String(AMP_MONTHS[m[2]] || 1).padStart(2,"0")}-${m[1]}`;
+}
+
+function extractAMPPayee(desc) {
+  return desc
+    .replace(/^PENDING TRANSACTION - /, "")
+    .replace(/^Purchase - /, "")
+    .replace(/^Direct Entry (?:Debit|Credit) Item Ref:\s+\S+\s+/, "")
+    .replace(/^Internet banking (?:scheduled )?(?:bill payment|external transfer)\s+\S+(?:\s+\S+)?\s*-\s*/, "")
+    .replace(/^(?:Withdrawal|Refund) - /, "")
+    .replace(/^Transfer (?:to|from) - /, "")
+    .replace(/\s{2,}[A-Z][A-Z &'*]+\s+AU\(\d{2}\/\d{2}\)\s*$/, "")
+    .trim();
+}
+
+function parseAMPCSV(text) {
+  const clean = text.replace(/^\uFEFF/, "");
+  const lines = clean.split(/\r?\n/);
+  const headerIdx = lines.findIndex(l => {
+    const stripped = l.trim().replace(/"/g, "");
+    return /^Date[,\t]Description/i.test(stripped);
+  });
+  if (headerIdx === -1) return null;
+
+  const result = Papa.parse(lines.slice(headerIdx).join("\n"), {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: h => h.trim().replace(/"/g, ""),
+  });
+
+  const txs = [];
+  for (const row of result.data) {
+    const desc = (row.Description || "").trim();
+    if (!desc) continue;
+    if (/^PENDING/i.test(desc)) continue;
+    if (/Transfer from/i.test(desc)) continue;
+    if (/Inward swift/i.test(desc)) continue;
+    if (/QANTAS MONEY CC/i.test(desc)) continue;
+    if (/Transfer to PayID Superhero/i.test(desc)) continue;
+    if (/Transfer to andrew fanner/i.test(desc)) continue;
+    if (/Transfer to PayID S J FANNER$/i.test(desc)) continue;
+
+    const amtStr = (row.Amount || "").replace(/[$,]/g, "");
+    const amt = parseFloat(amtStr);
+    if (isNaN(amt) || amt >= 0) continue;
+
+    let category = null;
+    for (const [key, cat] of Object.entries(PAYEE_MAPPINGS)) {
+      if (desc.toLowerCase().includes(key.toLowerCase())) { category = cat; break; }
+    }
+
+    txs.push({
+      date:        parseAMPDate((row.Date || "").trim()),
+      payee:       extractAMPPayee(desc),
+      amount:      Math.abs(amt),
+      upCategory:  "",
+      category,
+      source:      "AMP",
+      needsReview: !category,
+    });
+  }
+  return txs;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt  = n => "$" + Math.round(n || 0).toLocaleString();
 const fmtD = n => "$" + (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -65,6 +135,24 @@ const fileToBase64 = f => new Promise((res, rej) => {
   r.onerror = rej;
   r.readAsDataURL(f);
 });
+
+// ─── Sorted category groups for <select> dropdowns ───────────────────────────
+const asc = (a, b) => a.name.localeCompare(b.name);
+const LIVING_CATS    = SHEET_CATEGORIES.filter(c => !c.childcare).sort(asc);
+const CHILDCARE_CATS = SHEET_CATEGORIES.filter(c =>  c.childcare).sort(asc);
+function CatOptions({ empty = false }) {
+  return (
+    <>
+      {empty && <option value="">— pick category —</option>}
+      <optgroup label="Living Expenses">
+        {LIVING_CATS.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+      </optgroup>
+      <optgroup label="Childcare & School">
+        {CHILDCARE_CATS.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+      </optgroup>
+    </>
+  );
+}
 
 // ─── BudgetTrackerComponent ───────────────────────────────────────────────────
 export default function BudgetTrackerComponent({ onSwitch }) {
@@ -91,10 +179,12 @@ export default function BudgetTrackerComponent({ onSwitch }) {
       if (name.endsWith(".csv")) {
         setLog(l => [...l, `📄 Parsing ${file.name}…`]);
         const text = await file.text();
-        const rows = parseUpCSV(text);
+        const ampRows = parseAMPCSV(text);
+        const rows  = ampRows !== null ? ampRows : parseUpCSV(text);
+        const label = ampRows !== null ? "AMP" : "Up Bank";
         const uncat = rows.filter(r => !r.category).length;
         setLog(l => [...l,
-          `✅ Up Bank: ${rows.length} expenses parsed`,
+          `✅ ${label}: ${rows.length} expenses parsed`,
           uncat ? `⚠️  ${uncat} need manual category` : `✅ All auto-categorised`
         ]);
         all = [...all, ...rows];
@@ -196,8 +286,8 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     return acc;
   }, {});
 
-  const livingCats   = SHEET_CATEGORIES.filter(c => !c.childcare);
-  const childcareCats = SHEET_CATEGORIES.filter(c =>  c.childcare);
+  const livingCats   = SHEET_CATEGORIES.filter(c => !c.childcare && !c.exclude);
+  const childcareCats = SHEET_CATEGORIES.filter(c =>  c.childcare && !c.exclude);
   const livingTotal  = livingCats.reduce((s, c) => s + (totals[c.name] || 0), 0);
   const ccTotal      = childcareCats.reduce((s, c) => s + (totals[c.name] || 0), 0);
   const livingBudget = livingCats.reduce((s, c) => s + c.budget, 0);
@@ -264,7 +354,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                     setExpanded(newCat);
                   }}
                 >
-                  {SHEET_CATEGORIES.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                  <CatOptions />
                 </select>
                 <span style={{ color:C.text, fontWeight:600, width:72, textAlign:"right" }}>{fmtD(t.amount)}</span>
               </div>
@@ -426,7 +516,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                   </tr>
                 </thead>
                 <tbody>
-                  {SHEET_CATEGORIES.map(cat => {
+                  {SHEET_CATEGORIES.filter(c => !c.exclude).map(cat => {
                     const totalActual = monthsToShow.reduce((sum, m) => sum + (monthlyTotals[m][cat.name] || 0), 0);
                     const over = totalActual > cat.budget && cat.budget > 0;
                     return (
@@ -499,8 +589,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                   value={t.category || ""}
                   onChange={e => { if (!e.target.value) return; setTxs(prev => prev.map((x,j) => x===t ? {...x, category:e.target.value} : x)); }}
                 >
-                  <option value="">— pick category —</option>
-                  {SHEET_CATEGORIES.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                  <CatOptions empty />
                 </select>
                 <span style={{ color:C.amber, fontWeight:700, width:72, textAlign:"right" }}>{fmtD(t.amount)}</span>
               </div>
@@ -529,7 +618,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
               📋 Actuals for {MONTHS[month]} {year} — paste into your Sheet
             </div>
             <div style={{ background:"#030a12", borderRadius:10, padding:14, fontFamily:"monospace", fontSize:11, lineHeight:2.1 }}>
-              {SHEET_CATEGORIES.map(cat => {
+              {SHEET_CATEGORIES.filter(c => !c.exclude).map(cat => {
                 const actual = totals[cat.name] || 0;
                 return (
                   <div key={cat.name} style={{ display:"flex", justifyContent:"space-between", color: cat.childcare ? C.purple : actual>0 ? C.text : C.muted }}>

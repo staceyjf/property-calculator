@@ -82,9 +82,15 @@ function extractAMPPayee(desc) {
 }
 
 function parseAMPCSV(text) {
-  const lines = text.split(/\r?\n/);
-  // Find the row with the real column headers
-  const headerIdx = lines.findIndex(l => /^Date[,\t]Description/i.test(l.trim()));
+  // Strip BOM and find the real column header row (works wherever it sits in the file)
+  const clean = text.replace(/^\uFEFF/, "");
+  const lines = clean.split(/\r?\n/);
+  const headerIdx = lines.findIndex(l => {
+    const stripped = l.trim().replace(/"/g, ""); // handle "Date","Description",... quoted headers
+    return /^Date[,\t]Description/i.test(stripped);
+  });
+  console.log("[AMP] first line chars:", [...(lines[0] || "")].slice(0,20).map(c => c.charCodeAt(0)));
+  console.log("[AMP] headerIdx:", headerIdx, "| line:", lines[headerIdx] ?? "(not found)");
   if (headerIdx === -1) return null; // not AMP format
 
   const csvBody = lines.slice(headerIdx).join("\n");
@@ -93,22 +99,24 @@ function parseAMPCSV(text) {
     skipEmptyLines: true,
     transformHeader: h => h.trim(),
   });
+  console.log("[AMP] parsed rows:", result.data.length, "| fields:", result.meta.fields);
 
   const txs = [];
+  let skipped = 0;
   for (const row of result.data) {
     const desc = (row.Description || "").trim();
-    if (!desc) continue;
-    if (/^PENDING/i.test(desc)) continue;                          // pending, will settle later
-    if (/Transfer from/i.test(desc)) continue;                     // incoming money
-    if (/Inward swift/i.test(desc)) continue;                      // incoming wire
-    if (/QANTAS MONEY CC/i.test(desc)) continue;                   // credit card repayment
-    if (/Transfer to PayID Superhero/i.test(desc)) continue;       // investment transfer
-    if (/Transfer to andrew fanner/i.test(desc)) continue;         // internal transfer
-    if (/Transfer to PayID S J FANNER$/i.test(desc)) continue;     // unlabelled internal transfer
+    if (!desc) { skipped++; continue; }
+    if (/^PENDING/i.test(desc)) { skipped++; continue; }
+    if (/Transfer from/i.test(desc)) { skipped++; continue; }
+    if (/Inward swift/i.test(desc)) { skipped++; continue; }
+    if (/QANTAS MONEY CC/i.test(desc)) { skipped++; continue; }
+    if (/Transfer to PayID Superhero/i.test(desc)) { skipped++; continue; }
+    if (/Transfer to andrew fanner/i.test(desc)) { skipped++; continue; }
+    if (/Transfer to PayID S J FANNER$/i.test(desc)) { skipped++; continue; }
 
     const amtStr = (row.Amount || "").replace(/[$,]/g, "");
     const amt    = parseFloat(amtStr);
-    if (isNaN(amt) || amt >= 0) continue; // expenses are negative
+    if (isNaN(amt) || amt >= 0) { skipped++; continue; } // expenses are negative
 
     const payee = extractAMPPayee(desc);
     let category = null;
@@ -126,6 +134,7 @@ function parseAMPCSV(text) {
       needsReview: !category,
     });
   }
+  console.log("[AMP] kept:", txs.length, "| skipped:", skipped, "| sample:", txs[0]);
   return txs;
 }
 
@@ -162,9 +171,9 @@ export default function BudgetTracker() {
       if (name.endsWith(".csv")) {
         setLog(l => [...l, `📄 Parsing ${file.name}…`]);
         const text = await file.text();
-        const isAMP = /^Transaction history/i.test(text.trimStart());
-        const rows  = isAMP ? parseAMPCSV(text) : parseUpCSV(text);
-        const label = isAMP ? "AMP" : "Up Bank";
+        const ampRows = parseAMPCSV(text);
+        const rows  = ampRows !== null ? ampRows : parseUpCSV(text);
+        const label = ampRows !== null ? "AMP" : "Up Bank";
         const uncat = rows.filter(r => !r.category).length;
         setLog(l => [...l,
           `✅ ${label}: ${rows.length} expenses parsed`,
