@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import Papa from 'papaparse';
 import { SHEET_CATEGORIES, UP_TO_SHEET, PAYEE_MAPPINGS } from './config.js';
 
@@ -66,8 +66,9 @@ const fileToBase64 = f => new Promise((res, rej) => {
   r.readAsDataURL(f);
 });
 
-// ─── App ──────────────────────────────────────────────────────────────────────
-export default function BudgetTracker() {
+// ─── BudgetTrackerComponent ───────────────────────────────────────────────────
+export default function BudgetTrackerComponent({ onSwitch }) {
+  console.log("BudgetTracker rendering");
   const [step, setStep] = useState("upload");
   const [txs, setTxs] = useState([]);
   const [month, setMonth] = useState(new Date().getMonth());
@@ -77,6 +78,7 @@ export default function BudgetTracker() {
   const [expanded, setExpanded]   = useState(null);
   const [showSheet, setShowSheet] = useState(false);
   const [drag, setDrag]   = useState(false);
+  const [viewMode, setViewMode] = useState('single'); // 'single' or 'quarter'
   const fileRef = useRef(null);
 
   // ─── Process files ──────────────────────────────────────────────────────
@@ -112,15 +114,9 @@ export default function BudgetTracker() {
       }
     }
 
-    // Filter to selected month
-    const mm = String(month + 1).padStart(2, "0");
-    const yy = String(year);
-    const filtered = all.filter(t => {
-      const [y, m] = t.date.split("-");
-      return y === yy && m === mm;
-    });
-    setLog(l => [...l, ``, `📊 ${filtered.length} transactions in ${MONTHS[month]} ${year}`, filtered.length < all.length ? `ℹ️  ${all.length - filtered.length} transactions outside this month` : ""]);
-    setTxs(filtered);
+    // Filter to selected month/year later in derived state
+    setLog(l => [...l, ``, `📊 ${all.length} transactions loaded`, all.length > 0 ? `ℹ️  From ${Math.min(...all.map(t => new Date(t.date).getTime()))} to ${Math.max(...all.map(t => new Date(t.date).getTime()))}` : ""]);
+    setTxs(all);
     setTimeout(() => setStep("review"), 900);
   };
 
@@ -159,16 +155,44 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
   }
 
   // ─── Derived state ───────────────────────────────────────────────────────
-  const totals = txs.reduce((acc, t) => {
+  const getMonthsToShow = () => {
+    if (viewMode === 'single') {
+      return [month];
+    } else { // quarter
+      const quarter = Math.floor(month / 3);
+      return [quarter * 3, quarter * 3 + 1, quarter * 3 + 2];
+    }
+  };
+
+  const monthsToShow = getMonthsToShow();
+  const filteredTxs = txs.filter(t => {
+    const [y, m] = t.date.split("-");
+    return y === String(year) && monthsToShow.includes(parseInt(m) - 1);
+  });
+
+  const totals = filteredTxs.reduce((acc, t) => {
     const k = t.category || "__uncat__";
     acc[k] = (acc[k] || 0) + t.amount;
     return acc;
   }, {});
 
-  const bycat = txs.reduce((acc, t, i) => {
+  const bycat = filteredTxs.reduce((acc, t, i) => {
     const k = t.category || "__uncat__";
     if (!acc[k]) acc[k] = [];
     acc[k].push({ ...t, _i: i });
+    return acc;
+  }, {});
+
+  // For multi-month, group by month
+  const monthlyTotals = monthsToShow.reduce((acc, m) => {
+    acc[m] = filteredTxs.filter(t => {
+      const [y, mm] = t.date.split("-");
+      return parseInt(mm) - 1 === m;
+    }).reduce((acc2, t) => {
+      const k = t.category || "__uncat__";
+      acc2[k] = (acc2[k] || 0) + t.amount;
+      return acc2;
+    }, {});
     return acc;
   }, {});
 
@@ -179,7 +203,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
   const livingBudget = livingCats.reduce((s, c) => s + c.budget, 0);
   const ccBudget     = childcareCats.reduce((s, c) => s + c.budget, 0);
   const uncatTotal   = totals["__uncat__"] || 0;
-  const needsReview  = txs.filter(t => !t.category);
+  const needsReview  = filteredTxs.filter(t => !t.category);
 
   // ─── Colours ─────────────────────────────────────────────────────────────
   const C = { bg:"#070d1a", card:"#0c1422", border:"#142030", text:"#d8e8f5", muted:"#3a5570",
@@ -234,7 +258,11 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                 <select
                   style={{ background:"#060e1a", border:`1px solid ${C.border}`, borderRadius:5, color:C.text, padding:"2px 6px", fontSize:10, fontFamily:"inherit" }}
                   value={t.category || ""}
-                  onChange={e => setTxs(prev => prev.map((x,j) => j===t._i ? {...x, category:e.target.value} : x))}
+                  onChange={e => {
+                    const newCat = e.target.value;
+                    setTxs(prev => prev.map((x,j) => j===t._i ? {...x, category:newCat} : x));
+                    setExpanded(newCat);
+                  }}
                 >
                   {SHEET_CATEGORIES.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                 </select>
@@ -277,6 +305,10 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
   // ─────────────────────────────────────────────────────────────────────────
   if (step === "upload") return (
     <div style={{ fontFamily:"'DM Mono','Fira Code',monospace", background:C.bg, minHeight:"100vh", color:C.text, padding:24, fontSize:13 }}>
+      <h1>Hello, Budget Tracker is loading!</h1>
+      <button onClick={onSwitch} style={{ position: 'absolute', top: 20, right: 20, padding: '10px', background: C.blue, color: 'white', border: 'none', borderRadius: 5 }}>
+        Switch to Property Model
+      </button>
       <div style={{ maxWidth:640, margin:"0 auto" }}>
         <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:20, marginBottom:14 }}>
           <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>Budget Tracker</div>
@@ -285,7 +317,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
 
         <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:18, marginBottom:14 }}>
           <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8 }}>Month to reconcile</div>
-          <div style={{ display:"flex", gap:10 }}>
+          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
             <select style={{ background:"#060d18", border:`1px solid #1a3050`, borderRadius:7, color:C.text, padding:"7px 10px", fontSize:12, fontFamily:"inherit" }}
               value={month} onChange={e => setMonth(+e.target.value)}>
               {MONTHS.map((m,i) => <option key={m} value={i}>{m}</option>)}
@@ -294,6 +326,16 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
               value={year} onChange={e => setYear(+e.target.value)}>
               {[2025,2026,2027].map(y => <option key={y}>{y}</option>)}
             </select>
+            <div style={{ display:"flex", gap:6 }}>
+              <label style={{ color:C.muted, fontSize:11 }}>
+                <input type="radio" name="viewMode" value="single" checked={viewMode === 'single'} onChange={e => setViewMode(e.target.value)} />
+                Single
+              </label>
+              <label style={{ color:C.muted, fontSize:11 }}>
+                <input type="radio" name="viewMode" value="quarter" checked={viewMode === 'quarter'} onChange={e => setViewMode(e.target.value)} />
+                Quarter
+              </label>
+            </div>
           </div>
         </div>
 
@@ -351,9 +393,11 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         {/* Header */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16, flexWrap:"wrap", gap:10 }}>
           <div>
-            <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>{MONTHS[month]} {year}</div>
+            <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>
+              {viewMode === 'single' ? `${MONTHS[month]} ${year}` : `Q${Math.floor(month / 3) + 1} ${year}`}
+            </div>
             <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>
-              {txs.length} transactions &nbsp;·&nbsp;
+              {filteredTxs.length} transactions &nbsp;·&nbsp;
               {needsReview.length > 0
                 ? <span style={{ color:C.amber }}>{needsReview.length} uncategorised</span>
                 : <span style={{ color:C.green }}>all categorised ✅</span>}
@@ -365,7 +409,58 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
           </div>
         </div>
 
-        {/* Top 3 summary cards */}
+        {/* Multi-Month Table */}
+        {viewMode === 'quarter' && (
+          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"16px 18px", marginBottom:12 }}>
+            <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:12 }}>Actual vs Budget</div>
+            <div style={{ overflowX:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead>
+                  <tr style={{ borderBottom:`1px solid ${C.border}` }}>
+                    <th style={{ textAlign:"left", padding:"8px", color:C.muted }}>Category</th>
+                    <th style={{ textAlign:"right", padding:"8px", color:C.muted }}>Budget</th>
+                    {monthsToShow.map(m => (
+                      <th key={m} style={{ textAlign:"right", padding:"8px", color:C.muted }}>{MONTHS[m].substring(0,3)}</th>
+                    ))}
+                    <th style={{ textAlign:"right", padding:"8px", color:C.muted }}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {SHEET_CATEGORIES.map(cat => {
+                    const totalActual = monthsToShow.reduce((sum, m) => sum + (monthlyTotals[m][cat.name] || 0), 0);
+                    const over = totalActual > cat.budget && cat.budget > 0;
+                    return (
+                      <tr key={cat.name} style={{ borderBottom:`1px solid ${C.border}` }}>
+                        <td style={{ padding:"8px", color: totalActual > 0 ? C.text : C.muted }}>{cat.name}</td>
+                        <td style={{ textAlign:"right", padding:"8px", color:C.muted }}>{cat.budget > 0 ? fmt(cat.budget) : "—"}</td>
+                        {monthsToShow.map(m => {
+                          const actual = monthlyTotals[m][cat.name] || 0;
+                          return (
+                            <td key={m} style={{ textAlign:"right", padding:"8px", color: actual > 0 ? C.text : C.muted }}>
+                              {actual > 0 ? fmtD(actual) : "—"}
+                            </td>
+                          );
+                        })}
+                        <td style={{ textAlign:"right", padding:"8px", color: over ? C.red : totalActual > 0 ? C.green : C.muted }}>
+                          {totalActual > 0 ? fmtD(totalActual) : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* View Mode Selector */}
+        <div style={{ marginBottom:16 }}>
+          <label style={{ fontSize:12, color:C.muted, marginRight:8 }}>View Mode:</label>
+          <select value={viewMode} onChange={e => setViewMode(e.target.value)} style={{ background:C.card, color:C.text, border:`1px solid ${C.border}`, borderRadius:4, padding:"4px 8px" }}>
+            <option value="single">Single Month</option>
+            <option value="quarter">Quarter</option>
+          </select>
+        </div>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:16 }}>
           {[
             { label:"Living Expenses", actual:livingTotal, budget:livingBudget, color:C.blue },
