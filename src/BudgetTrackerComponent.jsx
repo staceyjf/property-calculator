@@ -635,7 +635,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                 </thead>
                 <tbody>
                   {SHEET_CATEGORIES.filter(c => !c.exclude).map(cat => {
-                    const totalActual = monthsToShow.reduce((sum, m) => sum + (monthlyTotals[m][cat.name] || 0), 0);
+                    const totalActual = monthsToShow.reduce((sum, m) => sum + (monthlyTotals[m][cat.name] || 0), 0) + (cat.fixedMonthly ? cat.fixedMonthly * monthsToShow.length : 0);
                     const rangeBudget = effectiveBudget(cat);
                     const over = totalActual > rangeBudget && cat.budget > 0;
                     return (
@@ -643,7 +643,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                         <td style={{ padding:"8px", color: totalActual > 0 ? C.text : C.muted }}>{cat.name}</td>
                         <td style={{ textAlign:"right", padding:"8px", color:C.muted }}>{cat.budget > 0 ? fmt(rangeBudget) : "—"}</td>
                         {monthsToShow.map(m => {
-                          const actual = monthlyTotals[m][cat.name] || 0;
+                          const actual = (monthlyTotals[m][cat.name] || 0) + (cat.fixedMonthly || 0);
                           return (
                             <td key={m} style={{ textAlign:"right", padding:"8px", color: actual > 0 ? C.text : C.muted }}>
                               {actual > 0 ? fmtD(actual) : "—"}
