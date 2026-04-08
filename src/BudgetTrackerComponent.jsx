@@ -1,6 +1,6 @@
 import React, { useState, useRef } from "react";
 import Papa from 'papaparse';
-import { SHEET_CATEGORIES, UP_TO_SHEET, PAYEE_MAPPINGS, SPREADSHEET_ID, ACTUALS_TAB_NAME } from './config.js';
+import { SHEET_CATEGORIES, UP_TO_SHEET, PAYEE_MAPPINGS, SPREADSHEET_ID, ACTUALS_TAB_NAME, INCOME } from './config.js';
 
 const ALL_CAT_NAMES = SHEET_CATEGORIES.map(c => c.name);
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -393,14 +393,23 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     const monthly = cat.annual ? cat.budget / 12 : cat.quarterly ? cat.budget / 3 : cat.budget;
     return monthly * budgetMultiplier;
   };
-  const livingCats   = SHEET_CATEGORIES.filter(c => !c.childcare && !c.exclude);
+  // Add fixedMonthly to totals (transfers to sub-accounts counted per month)
+  const fixedTotals = { ...totals };
+  for (const cat of SHEET_CATEGORIES) {
+    if (cat.fixedMonthly) fixedTotals[cat.name] = (fixedTotals[cat.name] || 0) + cat.fixedMonthly * budgetMultiplier;
+  }
+
+  const livingCats    = SHEET_CATEGORIES.filter(c => !c.childcare && !c.exclude);
   const childcareCats = SHEET_CATEGORIES.filter(c =>  c.childcare && !c.exclude);
-  const livingTotal  = livingCats.reduce((s, c) => s + (totals[c.name] || 0), 0);
-  const ccTotal      = childcareCats.reduce((s, c) => s + (totals[c.name] || 0), 0);
-  const livingBudget = livingCats.reduce((s, c) => s + effectiveBudget(c), 0);
-  const ccBudget     = childcareCats.reduce((s, c) => s + effectiveBudget(c), 0);
-  const uncatTotal   = totals["__uncat__"] || 0;
-  const needsReview  = filteredTxs.filter(t => !t.category);
+  const livingTotal   = livingCats.reduce((s, c) => s + (fixedTotals[c.name] || 0), 0);
+  const ccTotal       = childcareCats.reduce((s, c) => s + (fixedTotals[c.name] || 0), 0);
+  const livingBudget  = livingCats.reduce((s, c) => s + effectiveBudget(c), 0);
+  const ccBudget      = childcareCats.reduce((s, c) => s + effectiveBudget(c), 0);
+  const uncatTotal    = fixedTotals["__uncat__"] || 0;
+  const needsReview   = filteredTxs.filter(t => !t.category);
+  const totalIncome   = INCOME.reduce((s, p) => s + p.monthly, 0) * budgetMultiplier;
+  const totalExpenses = livingTotal + ccTotal + uncatTotal;
+  const forecasted    = totalIncome - totalExpenses;
 
   // ─── Colours ─────────────────────────────────────────────────────────────
   const C = { bg:"#070d1a", card:"#0c1422", border:"#142030", text:"#d8e8f5", muted:"#3a5570",
@@ -408,7 +417,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
 
   // ─── Category row component ──────────────────────────────────────────────
   function CatRow({ cat, accent }) {
-    const actual  = totals[cat.name] || 0;
+    const actual  = fixedTotals[cat.name] || 0;
     const rows    = bycat[cat.name] || [];
     const budget  = effectiveBudget(cat);
     const diff    = actual - budget;
@@ -653,11 +662,11 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
           </div>
         )}
 
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:16 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:12, marginBottom:16 }}>
           {[
-            { label:"Living Expenses", actual:livingTotal, budget:livingBudget, color:C.blue },
-            { label:"Childcare & School", actual:ccTotal, budget:ccBudget, color:C.purple },
-            { label:"Grand Total", actual:livingTotal+ccTotal+uncatTotal, budget:livingBudget+ccBudget, color:C.green },
+            { label:"Living Expenses",    actual:livingTotal,                       budget:livingBudget,             color:C.blue   },
+            { label:"Childcare & School", actual:ccTotal,                           budget:ccBudget,                 color:C.purple },
+            { label:"Grand Total",        actual:livingTotal+ccTotal+uncatTotal,    budget:livingBudget+ccBudget,    color:C.green  },
           ].map(({ label, actual, budget, color }) => {
             const diff = actual - budget; const over = diff > 0 && budget > 0;
             const pct = budget > 0 ? Math.min(actual/budget*100, 100) : 0;
@@ -675,6 +684,21 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
               </div>
             );
           })}
+          {/* Savings forecast card */}
+          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px" }}>
+            <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:4 }}>Forecasted Savings</div>
+            <div style={{ fontSize:22, fontWeight:800, color: forecasted >= 0 ? C.green : C.red, marginBottom:2 }}>{fmt(Math.abs(forecasted))}</div>
+            <div style={{ fontSize:11, color:C.muted }}>Income: {fmt(totalIncome)}</div>
+            {INCOME.map(p => (
+              <div key={p.name} style={{ fontSize:10, color:C.muted }}>{p.name}: {fmt(p.monthly * budgetMultiplier)}</div>
+            ))}
+            <div style={{ fontSize:11, fontWeight:600, color: forecasted >= 0 ? C.green : C.red, marginTop:2 }}>
+              {forecasted >= 0 ? `↑ saving` : `↓ overspending`}
+            </div>
+            <div style={{ marginTop:8, background:"#08121e", borderRadius:3, height:3 }}>
+              <div style={{ width:`${Math.min(totalExpenses/totalIncome*100,100)}%`, height:"100%", background: forecasted>=0?C.green:C.red, borderRadius:3, transition:"width 0.4s" }} />
+            </div>
+          </div>
         </div>
 
         {/* Uncategorised warning block */}
