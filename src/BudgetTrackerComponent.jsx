@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useRef } from "react";
 import Papa from 'papaparse';
 import { SHEET_CATEGORIES, UP_TO_SHEET, PAYEE_MAPPINGS } from './config.js';
 
@@ -266,10 +266,10 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     return acc;
   }, {});
 
-  const bycat = filteredTxs.reduce((acc, t, i) => {
+  const bycat = filteredTxs.reduce((acc, t) => {
     const k = t.category || "__uncat__";
     if (!acc[k]) acc[k] = [];
-    acc[k].push({ ...t, _i: i });
+    acc[k].push({ ...t, _i: txs.findIndex(x => x === t) });
     return acc;
   }, {});
 
@@ -286,12 +286,13 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     return acc;
   }, {});
 
+  const budgetMultiplier = monthsToShow.length;
   const livingCats   = SHEET_CATEGORIES.filter(c => !c.childcare && !c.exclude);
   const childcareCats = SHEET_CATEGORIES.filter(c =>  c.childcare && !c.exclude);
   const livingTotal  = livingCats.reduce((s, c) => s + (totals[c.name] || 0), 0);
   const ccTotal      = childcareCats.reduce((s, c) => s + (totals[c.name] || 0), 0);
-  const livingBudget = livingCats.reduce((s, c) => s + c.budget, 0);
-  const ccBudget     = childcareCats.reduce((s, c) => s + c.budget, 0);
+  const livingBudget = livingCats.reduce((s, c) => s + c.budget, 0) * budgetMultiplier;
+  const ccBudget     = childcareCats.reduce((s, c) => s + c.budget, 0) * budgetMultiplier;
   const uncatTotal   = totals["__uncat__"] || 0;
   const needsReview  = filteredTxs.filter(t => !t.category);
 
@@ -301,12 +302,13 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
 
   // ─── Category row component ──────────────────────────────────────────────
   function CatRow({ cat, accent }) {
-    const actual = totals[cat.name] || 0;
-    const rows   = bycat[cat.name] || [];
-    const diff   = actual - cat.budget;
-    const over   = diff > 0 && cat.budget > 0;
-    const open   = expanded === cat.name;
-    const pct    = cat.budget > 0 ? Math.min(actual / cat.budget * 100, 100) : 0;
+    const actual  = totals[cat.name] || 0;
+    const rows    = bycat[cat.name] || [];
+    const budget  = cat.budget * budgetMultiplier;
+    const diff    = actual - budget;
+    const over    = diff > 0 && budget > 0;
+    const open    = expanded === cat.name;
+    const pct     = budget > 0 ? Math.min(actual / budget * 100, 100) : 0;
 
     return (
       <div>
@@ -326,15 +328,15 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
             {pct > 0 && <div style={{ width:`${pct}%`, height:"100%", background: over ? C.red : accent, borderRadius:2 }} />}
           </div>
           <span style={{ fontSize:11, color:C.muted, width:68, textAlign:"right" }}>
-            {cat.budget > 0 ? fmt(cat.budget) : "—"}
+            {budget > 0 ? fmt(budget) : "—"}
           </span>
           <span style={{ fontSize:12, fontWeight: actual>0?700:400, width:80, textAlign:"right",
             color: actual>0 ? (over ? C.red : accent) : C.muted }}>
             {actual > 0 ? fmtD(actual) : "—"}
           </span>
           <span style={{ fontSize:11, width:78, textAlign:"right",
-            color: actual===0 || cat.budget===0 ? "transparent" : over ? C.red : accent }}>
-            {actual>0 && cat.budget>0 ? (over ? `+${fmt(diff)}` : `−${fmt(Math.abs(diff))}`) : ""}
+            color: actual===0 || budget===0 ? "transparent" : over ? C.red : accent }}>
+            {actual>0 && budget>0 ? (over ? `+${fmt(diff)}` : `−${fmt(Math.abs(diff))}`) : ""}
           </span>
         </div>
 
@@ -439,11 +441,6 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
           <div style={{ fontSize:34, marginBottom:10 }}>📂</div>
           <div style={{ fontSize:15, fontWeight:700, color:C.blue, marginBottom:6 }}>Drop files here or click to browse</div>
           <div style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Up Bank CSV &nbsp;·&nbsp; AMP Bank PDF</div>
-          <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
-            {["📄 up_2026-03-15.csv","📑 Amp_3_months.pdf"].map(f => (
-              <div key={f} style={{ background:"#091828", border:"1px solid #1a3050", borderRadius:7, padding:"5px 12px", fontSize:11, color:"#4a80b0" }}>{f}</div>
-            ))}
-          </div>
           <input ref={fileRef} type="file" accept=".csv,.pdf" multiple style={{ display:"none" }} onChange={e => processFiles(e.target.files)} />
         </div>
 
@@ -518,11 +515,12 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                 <tbody>
                   {SHEET_CATEGORIES.filter(c => !c.exclude).map(cat => {
                     const totalActual = monthsToShow.reduce((sum, m) => sum + (monthlyTotals[m][cat.name] || 0), 0);
-                    const over = totalActual > cat.budget && cat.budget > 0;
+                    const quarterBudget = cat.budget * 3;
+                    const over = totalActual > quarterBudget && cat.budget > 0;
                     return (
                       <tr key={cat.name} style={{ borderBottom:`1px solid ${C.border}` }}>
                         <td style={{ padding:"8px", color: totalActual > 0 ? C.text : C.muted }}>{cat.name}</td>
-                        <td style={{ textAlign:"right", padding:"8px", color:C.muted }}>{cat.budget > 0 ? fmt(cat.budget) : "—"}</td>
+                        <td style={{ textAlign:"right", padding:"8px", color:C.muted }}>{cat.budget > 0 ? fmt(quarterBudget) : "—"}</td>
                         {monthsToShow.map(m => {
                           const actual = monthlyTotals[m][cat.name] || 0;
                           return (
