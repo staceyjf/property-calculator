@@ -1,6 +1,6 @@
 import React, { useState, useRef } from "react";
 import Papa from 'papaparse';
-import { SHEET_CATEGORIES, UP_TO_SHEET, PAYEE_MAPPINGS } from './config.js';
+import { SHEET_CATEGORIES, UP_TO_SHEET, PAYEE_MAPPINGS, SPREADSHEET_ID, ACTUALS_TAB_NAME } from './config.js';
 
 const ALL_CAT_NAMES = SHEET_CATEGORIES.map(c => c.name);
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -159,14 +159,16 @@ export default function BudgetTrackerComponent({ onSwitch }) {
   console.log("BudgetTracker rendering");
   const [step, setStep] = useState("upload");
   const [txs, setTxs] = useState([]);
-  const [month, setMonth] = useState(new Date().getMonth());
-  const [year, setYear]   = useState(new Date().getFullYear());
-  const [log, setLog]     = useState([]);
-  const [aiParsing, setAiParsing] = useState(false);
-  const [expanded, setExpanded]   = useState(null);
-  const [showSheet, setShowSheet] = useState(false);
-  const [drag, setDrag]   = useState(false);
-  const [viewMode, setViewMode] = useState('single'); // 'single' or 'quarter'
+  const [startMonth, setStartMonth] = useState(0);
+  const [endMonth, setEndMonth]     = useState(new Date().getMonth());
+  const [year, setYear]             = useState(new Date().getFullYear());
+  const [log, setLog]               = useState([]);
+  const [aiParsing, setAiParsing]   = useState(false);
+  const [expanded, setExpanded]     = useState(null);
+  const [showSheet, setShowSheet]   = useState(false);
+  const [drag, setDrag]             = useState(false);
+  const [googleToken, setGoogleToken] = useState(null);
+  const [sheetStatus, setSheetStatus] = useState(null); // null|'writing'|'done'|{error}
   const fileRef = useRef(null);
 
   // ─── Process files ──────────────────────────────────────────────────────
@@ -244,17 +246,107 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     });
   }
 
-  // ─── Derived state ───────────────────────────────────────────────────────
-  const getMonthsToShow = () => {
-    if (viewMode === 'single') {
-      return [month];
-    } else { // quarter
-      const quarter = Math.floor(month / 3);
-      return [quarter * 3, quarter * 3 + 1, quarter * 3 + 2];
+  // ─── Google Sheets OAuth + write ─────────────────────────────────────────
+  const colLetter = idx => {
+    let n = idx + 1, s = "";
+    while (n > 0) { s = String.fromCharCode(65 + (n - 1) % 26) + s; n = Math.floor((n - 1) / 26); }
+    return s;
+  };
+
+  const signInGoogle = () => {
+    if (!window.google) { alert("Google sign-in not loaded yet — try again in a moment."); return; }
+    window.google.accounts.oauth2.initTokenClient({
+      client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+      scope: "https://www.googleapis.com/auth/spreadsheets",
+      callback: resp => { if (resp.access_token) setGoogleToken(resp.access_token); },
+    }).requestAccessToken();
+  };
+
+  const sheetsApi = async (path, opts = {}) => {
+    const resp = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}${path}`, {
+      ...opts,
+      headers: { Authorization: `Bearer ${googleToken}`, "Content-Type": "application/json", ...(opts.headers || {}) },
+    });
+    if (!resp.ok) throw new Error(`Sheets API ${resp.status}: ${await resp.text()}`);
+    return resp.json();
+  };
+
+  const setupSheet = async () => {
+    if (!googleToken) { signInGoogle(); return; }
+    setSheetStatus("writing");
+    try {
+      // Check if tab already exists
+      const meta = await sheetsApi(`?fields=sheets.properties`);
+      const exists = meta.sheets?.some(s => s.properties.title === ACTUALS_TAB_NAME);
+      if (exists) { setSheetStatus({ error: `Tab "${ACTUALS_TAB_NAME}" already exists — no changes made` }); return; }
+
+      // Create the tab
+      await sheetsApi(":batchUpdate", {
+        method: "POST",
+        body: JSON.stringify({ requests: [{ addSheet: { properties: { title: ACTUALS_TAB_NAME } } }] }),
+      });
+
+      // Write headers + category rows
+      const headers = ["Category", "Budget", ...MONTHS.map(m => `${m} ${year}`)];
+      const cats = SHEET_CATEGORIES.filter(c => !c.exclude);
+      const rows = cats.map(c => [c.name, c.budget > 0 ? c.budget : ""]);
+      await sheetsApi(`/values/${encodeURIComponent(ACTUALS_TAB_NAME + "!A1")}?valueInputOption=USER_ENTERED`, {
+        method: "PUT",
+        body: JSON.stringify({ range: `${ACTUALS_TAB_NAME}!A1`, majorDimension: "ROWS", values: [headers, ...rows] }),
+      });
+
+      setSheetStatus("done");
+    } catch (e) {
+      setSheetStatus({ error: e.message });
     }
   };
 
-  const monthsToShow = getMonthsToShow();
+  const writeToSheet = async () => {
+    if (!googleToken) { signInGoogle(); return; }
+    setSheetStatus("writing");
+    try {
+      // Read the tab
+      const { values = [] } = await sheetsApi(`/values/${encodeURIComponent(ACTUALS_TAB_NAME)}`);
+
+      const headerRow = values[0] || [];
+      const cats = SHEET_CATEGORIES.filter(c => !c.exclude);
+      const updates = [];
+
+      for (const m of monthsToShow) {
+        const monthCol = headerRow.findIndex(h =>
+          h.toLowerCase().includes(MONTHS[m].toLowerCase()) && h.includes(String(year))
+        );
+        if (monthCol === -1) continue; // skip if column not found
+        for (const cat of cats) {
+          const rowIdx = values.findIndex(row =>
+            (row[0] || "").trim().toLowerCase() === cat.name.trim().toLowerCase()
+          );
+          if (rowIdx === -1) continue;
+          const actual = (monthlyTotals[m] || {})[cat.name] || 0;
+          updates.push({
+            range: `${ACTUALS_TAB_NAME}!${colLetter(monthCol)}${rowIdx + 1}`,
+            values: [[actual > 0 ? parseFloat(actual.toFixed(2)) : ""]],
+          });
+        }
+      }
+
+      await sheetsApi(`/values:batchUpdate`, {
+        method: "POST",
+        body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updates }),
+      });
+      setSheetStatus("done");
+    } catch (e) {
+      setSheetStatus({ error: e.message });
+    }
+  };
+
+  // ─── Derived state ───────────────────────────────────────────────────────
+  const monthsToShow = [];
+  for (let m = startMonth; m <= endMonth; m++) monthsToShow.push(m);
+
+  const rangeLabel = startMonth === endMonth
+    ? `${MONTHS[startMonth]} ${year}`
+    : `${MONTHS[startMonth].substring(0, 3)} – ${MONTHS[endMonth].substring(0, 3)} ${year}`;
   const filteredTxs = txs.filter(t => {
     const [y, m] = t.date.split("-");
     return y === String(year) && monthsToShow.includes(parseInt(m) - 1);
@@ -397,37 +489,32 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
   // ─────────────────────────────────────────────────────────────────────────
   if (step === "upload") return (
     <div style={{ fontFamily:"'DM Mono','Fira Code',monospace", background:C.bg, minHeight:"100vh", color:C.text, padding:24, fontSize:13 }}>
-      <h1>Hello, Budget Tracker is loading!</h1>
       <button onClick={onSwitch} style={{ position: 'absolute', top: 20, right: 20, padding: '10px', background: C.blue, color: 'white', border: 'none', borderRadius: 5 }}>
         Switch to Property Model
       </button>
       <div style={{ maxWidth:640, margin:"0 auto" }}>
         <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:20, marginBottom:14 }}>
-          <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>Budget Tracker</div>
+          <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>Fanner's Budget Tracker</div>
           <div style={{ fontSize:12, color:C.muted, marginTop:3 }}>Up Bank + AMP → budget reconciliation</div>
         </div>
 
         <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:18, marginBottom:14 }}>
-          <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8 }}>Month to reconcile</div>
-          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-            <select style={{ background:"#060d18", border:`1px solid #1a3050`, borderRadius:7, color:C.text, padding:"7px 10px", fontSize:12, fontFamily:"inherit" }}
-              value={month} onChange={e => setMonth(+e.target.value)}>
-              {MONTHS.map((m,i) => <option key={m} value={i}>{m}</option>)}
-            </select>
+          <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8 }}>Date range to reconcile</div>
+          <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
             <select style={{ background:"#060d18", border:`1px solid #1a3050`, borderRadius:7, color:C.text, padding:"7px 10px", fontSize:12, fontFamily:"inherit" }}
               value={year} onChange={e => setYear(+e.target.value)}>
               {[2025,2026,2027].map(y => <option key={y}>{y}</option>)}
             </select>
-            <div style={{ display:"flex", gap:6 }}>
-              <label style={{ color:C.muted, fontSize:11 }}>
-                <input type="radio" name="viewMode" value="single" checked={viewMode === 'single'} onChange={e => setViewMode(e.target.value)} />
-                Single
-              </label>
-              <label style={{ color:C.muted, fontSize:11 }}>
-                <input type="radio" name="viewMode" value="quarter" checked={viewMode === 'quarter'} onChange={e => setViewMode(e.target.value)} />
-                Quarter
-              </label>
-            </div>
+            <span style={{ color:C.muted, fontSize:12 }}>From</span>
+            <select style={{ background:"#060d18", border:`1px solid #1a3050`, borderRadius:7, color:C.text, padding:"7px 10px", fontSize:12, fontFamily:"inherit" }}
+              value={startMonth} onChange={e => { const v = +e.target.value; setStartMonth(v); if (v > endMonth) setEndMonth(v); }}>
+              {MONTHS.map((m,i) => <option key={m} value={i}>{m}</option>)}
+            </select>
+            <span style={{ color:C.muted, fontSize:12 }}>To</span>
+            <select style={{ background:"#060d18", border:`1px solid #1a3050`, borderRadius:7, color:C.text, padding:"7px 10px", fontSize:12, fontFamily:"inherit" }}
+              value={endMonth} onChange={e => { const v = +e.target.value; setEndMonth(v); if (v < startMonth) setStartMonth(v); }}>
+              {MONTHS.map((m,i) => <option key={m} value={i}>{m}</option>)}
+            </select>
           </div>
         </div>
 
@@ -481,7 +568,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16, flexWrap:"wrap", gap:10 }}>
           <div>
             <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>
-              {viewMode === 'single' ? `${MONTHS[month]} ${year}` : `Q${Math.floor(month / 3) + 1} ${year}`}
+              {rangeLabel}
             </div>
             <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>
               {filteredTxs.length} transactions &nbsp;·&nbsp;
@@ -490,14 +577,34 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                 : <span style={{ color:C.green }}>all categorised ✅</span>}
             </div>
           </div>
-          <div style={{ display:"flex", gap:8 }}>
+          <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <button style={{ background:"#0c1a2a", color:C.blue, border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={() => { setTxs([]); setStep("upload"); }}>← Upload</button>
-            <button style={{ background:"#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={() => setShowSheet(s => !s)}>Update Sheet →</button>
+            <button style={{ background:"#0c1a2a", color:C.muted, border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={() => setShowSheet(s => !s)}>Preview</button>
+            {!googleToken
+              ? <button style={{ background:"#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={signInGoogle}>Connect Google →</button>
+              : <>
+                  <button
+                    disabled={sheetStatus === "writing"}
+                    style={{ background:"#2a3a4a", color:"#a0c0e0", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+                    onClick={() => { setSheetStatus(null); setupSheet(); }}
+                  >
+                    Setup Sheet
+                  </button>
+                  <button
+                    disabled={sheetStatus === "writing"}
+                    style={{ background: sheetStatus === "done" ? "#1a5a3a" : "#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+                    onClick={() => { setSheetStatus(null); writeToSheet(); }}
+                  >
+                    {sheetStatus === "writing" ? "Writing…" : sheetStatus === "done" ? "✓ Written" : "Write to Sheet →"}
+                  </button>
+                </>
+            }
+            {sheetStatus?.error && <span style={{ fontSize:11, color:C.red }}>{sheetStatus.error}</span>}
           </div>
         </div>
 
         {/* Multi-Month Table */}
-        {viewMode === 'quarter' && (
+        {monthsToShow.length > 1 && (
           <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"16px 18px", marginBottom:12 }}>
             <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:12 }}>Actual vs Budget</div>
             <div style={{ overflowX:"auto" }}>
@@ -541,14 +648,6 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
           </div>
         )}
 
-        {/* View Mode Selector */}
-        <div style={{ marginBottom:16 }}>
-          <label style={{ fontSize:12, color:C.muted, marginRight:8 }}>View Mode:</label>
-          <select value={viewMode} onChange={e => setViewMode(e.target.value)} style={{ background:C.card, color:C.text, border:`1px solid ${C.border}`, borderRadius:4, padding:"4px 8px" }}>
-            <option value="single">Single Month</option>
-            <option value="quarter">Quarter</option>
-          </select>
-        </div>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:16 }}>
           {[
             { label:"Living Expenses", actual:livingTotal, budget:livingBudget, color:C.blue },
@@ -585,7 +684,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                 <select
                   style={{ background:"#060d18", border:`1px solid #3a2800`, borderRadius:6, color:C.text, padding:"3px 8px", fontSize:11, fontFamily:"inherit" }}
                   value={t.category || ""}
-                  onChange={e => { if (!e.target.value) return; setTxs(prev => prev.map((x,j) => x===t ? {...x, category:e.target.value} : x)); }}
+                  onChange={e => { if (!e.target.value) return; setTxs(prev => prev.map(x => x===t ? {...x, category:e.target.value} : x)); }}
                 >
                   <CatOptions empty />
                 </select>
@@ -613,7 +712,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         {showSheet && (
           <div style={{ background:"#08141e", border:`1px solid #1a3a5a`, borderRadius:12, padding:18, marginBottom:12 }}>
             <div style={{ fontWeight:700, color:C.blue, marginBottom:10, fontSize:13 }}>
-              📋 Actuals for {MONTHS[month]} {year} — paste into your Sheet
+              📋 Actuals for {rangeLabel} — paste into your Sheet
             </div>
             <div style={{ background:"#030a12", borderRadius:10, padding:14, fontFamily:"monospace", fontSize:11, lineHeight:2.1 }}>
               {SHEET_CATEGORIES.filter(c => !c.exclude).map(cat => {
@@ -631,9 +730,11 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                 </div>
               )}
             </div>
-            <div style={{ marginTop:10, fontSize:11, color:C.muted, lineHeight:1.8 }}>
-              💡 <strong style={{ color:"#4a7a9a" }}>Next step:</strong> Make your Sheet "Anyone can view" → the Property-calculator can then read these totals live via the Sheets API.
-            </div>
+            {!googleToken && (
+              <div style={{ marginTop:10, fontSize:11, color:C.muted }}>
+                Click <strong style={{ color:"#4a7a9a" }}>Connect Google →</strong> above to write these values directly to your Sheet.
+              </div>
+            )}
           </div>
         )}
 
