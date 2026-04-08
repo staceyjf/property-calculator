@@ -388,12 +388,17 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
   }, {});
 
   const budgetMultiplier = monthsToShow.length;
+  // Annual categories are stored as yearly totals — scale to the selected period
+  const effectiveBudget = (cat) => {
+    const monthly = cat.annual ? cat.budget / 12 : cat.quarterly ? cat.budget / 3 : cat.budget;
+    return monthly * budgetMultiplier;
+  };
   const livingCats   = SHEET_CATEGORIES.filter(c => !c.childcare && !c.exclude);
   const childcareCats = SHEET_CATEGORIES.filter(c =>  c.childcare && !c.exclude);
   const livingTotal  = livingCats.reduce((s, c) => s + (totals[c.name] || 0), 0);
   const ccTotal      = childcareCats.reduce((s, c) => s + (totals[c.name] || 0), 0);
-  const livingBudget = livingCats.reduce((s, c) => s + c.budget, 0) * budgetMultiplier;
-  const ccBudget     = childcareCats.reduce((s, c) => s + c.budget, 0) * budgetMultiplier;
+  const livingBudget = livingCats.reduce((s, c) => s + effectiveBudget(c), 0);
+  const ccBudget     = childcareCats.reduce((s, c) => s + effectiveBudget(c), 0);
   const uncatTotal   = totals["__uncat__"] || 0;
   const needsReview  = filteredTxs.filter(t => !t.category);
 
@@ -405,7 +410,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
   function CatRow({ cat, accent }) {
     const actual  = totals[cat.name] || 0;
     const rows    = bycat[cat.name] || [];
-    const budget  = cat.budget * budgetMultiplier;
+    const budget  = effectiveBudget(cat);
     const diff    = actual - budget;
     const over    = diff > 0 && budget > 0;
     const open    = expanded === cat.name;
@@ -622,7 +627,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                 <tbody>
                   {SHEET_CATEGORIES.filter(c => !c.exclude).map(cat => {
                     const totalActual = monthsToShow.reduce((sum, m) => sum + (monthlyTotals[m][cat.name] || 0), 0);
-                    const rangeBudget = cat.budget * monthsToShow.length;
+                    const rangeBudget = effectiveBudget(cat);
                     const over = totalActual > rangeBudget && cat.budget > 0;
                     return (
                       <tr key={cat.name} style={{ borderBottom:`1px solid ${C.border}` }}>
