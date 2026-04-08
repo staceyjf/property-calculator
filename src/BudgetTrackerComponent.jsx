@@ -275,75 +275,74 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     if (!googleToken) { signInGoogle(); return; }
     setSheetStatus("writing");
     try {
-      // ── 1. Create tab if it doesn't exist yet ─────────────────────────────
+      // ── 1. Get sheet metadata (need numeric sheetId for formatting) ────────
       const meta = await sheetsApi(`?fields=sheets.properties`);
-      const tabExists = meta.sheets?.some(s => s.properties.title === ACTUALS_TAB_NAME);
-
-      if (!tabExists) {
-        await sheetsApi(":batchUpdate", {
-          method: "POST",
-          body: JSON.stringify({ requests: [{ addSheet: { properties: { title: ACTUALS_TAB_NAME } } }] }),
-        });
-
-        const allCats  = SHEET_CATEGORIES.filter(c => !c.exclude);
-        const lCats    = allCats.filter(c => !c.childcare);
-        const ccCats   = allCats.filter(c =>  c.childcare);
-        const lCount   = lCats.length;
-        const allCount = allCats.length;
-        const lBudget  = lCats.reduce((s, c) => s + c.budget, 0);
-        const ccBudget = ccCats.reduce((s, c) => s + c.budget, 0);
-
-        // Helper: SUM formula for a column across a row range
-        const sum = (colIdx, r1, r2) => `=SUM(${colLetter(colIdx)}${r1}:${colLetter(colIdx)}${r2})`;
-
-        const headers      = ["Category", "Budget", ...MONTHS.map(m => `${m} ${year}`)];
-        const catRows      = allCats.map(c => [c.name, c.budget > 0 ? c.budget : ""]);
-        const livingRow    = ["Living Total",    lBudget,           ...MONTHS.map((_, i) => sum(i + 2, 2, lCount + 1))];
-        const childcareRow = ["Childcare Total", ccBudget,          ...MONTHS.map((_, i) => sum(i + 2, lCount + 2, allCount + 1))];
-        const grandRow     = ["Grand Total",     lBudget + ccBudget,...MONTHS.map((_, i) => sum(i + 2, 2, allCount + 1))];
-
-        await sheetsApi(`/values/${encodeURIComponent(ACTUALS_TAB_NAME + "!A1")}?valueInputOption=USER_ENTERED`, {
-          method: "PUT",
-          body: JSON.stringify({
-            range: `${ACTUALS_TAB_NAME}!A1`,
-            majorDimension: "ROWS",
-            values: [headers, ...catRows, [""], livingRow, childcareRow, grandRow],
-          }),
-        });
-      }
+      const sheetMeta = meta.sheets?.find(s => s.properties.title === ACTUALS_TAB_NAME);
+      if (!sheetMeta) throw new Error(`Tab "${ACTUALS_TAB_NAME}" not found — please set up the sheet template first.`);
+      const sheetId = sheetMeta.properties.sheetId;
 
       // ── 2. Read the tab to find row/col positions ─────────────────────────
+      // Row 1 (index 0): "Actual" / "Budget" labels
+      // Row 2 (index 1): "Jan 2026", "Feb 2026", … month headers
       const { values = [] } = await sheetsApi(`/values/${encodeURIComponent(ACTUALS_TAB_NAME)}`);
-      const headerRow = values[0] || [];
-      const cats      = SHEET_CATEGORIES.filter(c => !c.exclude);
-      const updates   = [];
+      const dateRow  = values[1] || [];
+      const cats     = SHEET_CATEGORIES.filter(c => !c.exclude);
+      const valueUpdates  = [];
+      const formatRequests = [];
 
       for (const m of monthsToShow) {
-        const monthCol = headerRow.findIndex(h =>
-          h.toLowerCase().includes(MONTHS[m].toLowerCase()) && h.includes(String(year))
+        const monthLabel = `${MONTHS[m].substring(0, 3)} ${year}`;
+        const monthCol = dateRow.findIndex(h =>
+          (h || "").toLowerCase() === monthLabel.toLowerCase()
         );
         if (monthCol === -1) continue;
 
+        // Write category actuals (including fixedMonthly transfers)
         for (const cat of cats) {
           const rowIdx = values.findIndex(row =>
             (row[0] || "").trim().toLowerCase() === cat.name.trim().toLowerCase()
           );
           if (rowIdx === -1) continue;
-          const actual = (monthlyTotals[m] || {})[cat.name] || 0;
-          updates.push({
+          const actual = ((monthlyTotals[m] || {})[cat.name] || 0) + (cat.fixedMonthly || 0);
+          valueUpdates.push({
             range: `${ACTUALS_TAB_NAME}!${colLetter(monthCol)}${rowIdx + 1}`,
             values: [[actual > 0 ? parseFloat(actual.toFixed(2)) : ""]],
           });
         }
-      }
 
-      if (updates.length > 0) {
-        await sheetsApi(`/values:batchUpdate`, {
-          method: "POST",
-          body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updates }),
+        // Change row 1 label from "Budget" → "Actual"
+        valueUpdates.push({
+          range: `${ACTUALS_TAB_NAME}!${colLetter(monthCol)}1`,
+          values: [["Actual"]],
+        });
+
+        // Clear grey background for the whole column
+        formatRequests.push({
+          repeatCell: {
+            range: { sheetId, startColumnIndex: monthCol, endColumnIndex: monthCol + 1 },
+            cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 1, blue: 1 } } },
+            fields: "userEnteredFormat.backgroundColor",
+          },
         });
       }
-      setSheetStatus("done");
+
+      console.log(`[Sheet write] ${valueUpdates.length} value updates, ${formatRequests.length} format requests`, valueUpdates);
+
+      if (valueUpdates.length > 0) {
+        await sheetsApi(`/values:batchUpdate`, {
+          method: "POST",
+          body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: valueUpdates }),
+        });
+      }
+      if (formatRequests.length > 0) {
+        await sheetsApi(":batchUpdate", {
+          method: "POST",
+          body: JSON.stringify({ requests: formatRequests }),
+        });
+      }
+      const monthLabels = monthsToShow.map(m => MONTHS[m].substring(0, 3)).join(", ");
+      console.log(`[Sheet write] Done — ${monthLabels} ${year}`);
+      setSheetStatus({ done: true, msg: `✓ Written ${monthLabels} (${valueUpdates.length - monthsToShow.length} rows)` });
     } catch (e) {
       setSheetStatus({ error: e.message });
     }
@@ -607,10 +606,10 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
               ? <button style={{ background:"#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={signInGoogle}>Connect Google →</button>
               : <button
                   disabled={sheetStatus === "writing"}
-                  style={{ background: sheetStatus === "done" ? "#1a5a3a" : "#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+                  style={{ background: sheetStatus?.done ? "#1a5a3a" : "#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
                   onClick={() => { setSheetStatus(null); writeToSheet(); }}
                 >
-                  {sheetStatus === "writing" ? "Writing…" : sheetStatus === "done" ? "✓ Written" : `Write ${rangeLabel} →`}
+                  {sheetStatus === "writing" ? "Writing…" : sheetStatus?.done ? sheetStatus.msg : `Write ${rangeLabel} →`}
                 </button>
             }
             {sheetStatus?.error && <span style={{ fontSize:11, color:C.red }}>{sheetStatus.error}</span>}
