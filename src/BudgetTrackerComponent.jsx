@@ -271,52 +271,59 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     return resp.json();
   };
 
-  const setupSheet = async () => {
-    if (!googleToken) { signInGoogle(); return; }
-    setSheetStatus("writing");
-    try {
-      // Check if tab already exists
-      const meta = await sheetsApi(`?fields=sheets.properties`);
-      const exists = meta.sheets?.some(s => s.properties.title === ACTUALS_TAB_NAME);
-      if (exists) { setSheetStatus({ error: `Tab "${ACTUALS_TAB_NAME}" already exists — no changes made` }); return; }
-
-      // Create the tab
-      await sheetsApi(":batchUpdate", {
-        method: "POST",
-        body: JSON.stringify({ requests: [{ addSheet: { properties: { title: ACTUALS_TAB_NAME } } }] }),
-      });
-
-      // Write headers + category rows
-      const headers = ["Category", "Budget", ...MONTHS.map(m => `${m} ${year}`)];
-      const cats = SHEET_CATEGORIES.filter(c => !c.exclude);
-      const rows = cats.map(c => [c.name, c.budget > 0 ? c.budget : ""]);
-      await sheetsApi(`/values/${encodeURIComponent(ACTUALS_TAB_NAME + "!A1")}?valueInputOption=USER_ENTERED`, {
-        method: "PUT",
-        body: JSON.stringify({ range: `${ACTUALS_TAB_NAME}!A1`, majorDimension: "ROWS", values: [headers, ...rows] }),
-      });
-
-      setSheetStatus("done");
-    } catch (e) {
-      setSheetStatus({ error: e.message });
-    }
-  };
-
   const writeToSheet = async () => {
     if (!googleToken) { signInGoogle(); return; }
     setSheetStatus("writing");
     try {
-      // Read the tab
-      const { values = [] } = await sheetsApi(`/values/${encodeURIComponent(ACTUALS_TAB_NAME)}`);
+      // ── 1. Create tab if it doesn't exist yet ─────────────────────────────
+      const meta = await sheetsApi(`?fields=sheets.properties`);
+      const tabExists = meta.sheets?.some(s => s.properties.title === ACTUALS_TAB_NAME);
 
+      if (!tabExists) {
+        await sheetsApi(":batchUpdate", {
+          method: "POST",
+          body: JSON.stringify({ requests: [{ addSheet: { properties: { title: ACTUALS_TAB_NAME } } }] }),
+        });
+
+        const allCats  = SHEET_CATEGORIES.filter(c => !c.exclude);
+        const lCats    = allCats.filter(c => !c.childcare);
+        const ccCats   = allCats.filter(c =>  c.childcare);
+        const lCount   = lCats.length;
+        const allCount = allCats.length;
+        const lBudget  = lCats.reduce((s, c) => s + c.budget, 0);
+        const ccBudget = ccCats.reduce((s, c) => s + c.budget, 0);
+
+        // Helper: SUM formula for a column across a row range
+        const sum = (colIdx, r1, r2) => `=SUM(${colLetter(colIdx)}${r1}:${colLetter(colIdx)}${r2})`;
+
+        const headers      = ["Category", "Budget", ...MONTHS.map(m => `${m} ${year}`)];
+        const catRows      = allCats.map(c => [c.name, c.budget > 0 ? c.budget : ""]);
+        const livingRow    = ["Living Total",    lBudget,           ...MONTHS.map((_, i) => sum(i + 2, 2, lCount + 1))];
+        const childcareRow = ["Childcare Total", ccBudget,          ...MONTHS.map((_, i) => sum(i + 2, lCount + 2, allCount + 1))];
+        const grandRow     = ["Grand Total",     lBudget + ccBudget,...MONTHS.map((_, i) => sum(i + 2, 2, allCount + 1))];
+
+        await sheetsApi(`/values/${encodeURIComponent(ACTUALS_TAB_NAME + "!A1")}?valueInputOption=USER_ENTERED`, {
+          method: "PUT",
+          body: JSON.stringify({
+            range: `${ACTUALS_TAB_NAME}!A1`,
+            majorDimension: "ROWS",
+            values: [headers, ...catRows, [""], livingRow, childcareRow, grandRow],
+          }),
+        });
+      }
+
+      // ── 2. Read the tab to find row/col positions ─────────────────────────
+      const { values = [] } = await sheetsApi(`/values/${encodeURIComponent(ACTUALS_TAB_NAME)}`);
       const headerRow = values[0] || [];
-      const cats = SHEET_CATEGORIES.filter(c => !c.exclude);
-      const updates = [];
+      const cats      = SHEET_CATEGORIES.filter(c => !c.exclude);
+      const updates   = [];
 
       for (const m of monthsToShow) {
         const monthCol = headerRow.findIndex(h =>
           h.toLowerCase().includes(MONTHS[m].toLowerCase()) && h.includes(String(year))
         );
-        if (monthCol === -1) continue; // skip if column not found
+        if (monthCol === -1) continue;
+
         for (const cat of cats) {
           const rowIdx = values.findIndex(row =>
             (row[0] || "").trim().toLowerCase() === cat.name.trim().toLowerCase()
@@ -330,10 +337,12 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         }
       }
 
-      await sheetsApi(`/values:batchUpdate`, {
-        method: "POST",
-        body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updates }),
-      });
+      if (updates.length > 0) {
+        await sheetsApi(`/values:batchUpdate`, {
+          method: "POST",
+          body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: updates }),
+        });
+      }
       setSheetStatus("done");
     } catch (e) {
       setSheetStatus({ error: e.message });
@@ -582,22 +591,13 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
             <button style={{ background:"#0c1a2a", color:C.muted, border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={() => setShowSheet(s => !s)}>Preview</button>
             {!googleToken
               ? <button style={{ background:"#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={signInGoogle}>Connect Google →</button>
-              : <>
-                  <button
-                    disabled={sheetStatus === "writing"}
-                    style={{ background:"#2a3a4a", color:"#a0c0e0", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
-                    onClick={() => { setSheetStatus(null); setupSheet(); }}
-                  >
-                    Setup Sheet
-                  </button>
-                  <button
-                    disabled={sheetStatus === "writing"}
-                    style={{ background: sheetStatus === "done" ? "#1a5a3a" : "#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
-                    onClick={() => { setSheetStatus(null); writeToSheet(); }}
-                  >
-                    {sheetStatus === "writing" ? "Writing…" : sheetStatus === "done" ? "✓ Written" : "Write to Sheet →"}
-                  </button>
-                </>
+              : <button
+                  disabled={sheetStatus === "writing"}
+                  style={{ background: sheetStatus === "done" ? "#1a5a3a" : "#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+                  onClick={() => { setSheetStatus(null); writeToSheet(); }}
+                >
+                  {sheetStatus === "writing" ? "Writing…" : sheetStatus === "done" ? "✓ Written" : `Write ${rangeLabel} →`}
+                </button>
             }
             {sheetStatus?.error && <span style={{ fontSize:11, color:C.red }}>{sheetStatus.error}</span>}
           </div>
@@ -622,12 +622,12 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
                 <tbody>
                   {SHEET_CATEGORIES.filter(c => !c.exclude).map(cat => {
                     const totalActual = monthsToShow.reduce((sum, m) => sum + (monthlyTotals[m][cat.name] || 0), 0);
-                    const quarterBudget = cat.budget * 3;
-                    const over = totalActual > quarterBudget && cat.budget > 0;
+                    const rangeBudget = cat.budget * monthsToShow.length;
+                    const over = totalActual > rangeBudget && cat.budget > 0;
                     return (
                       <tr key={cat.name} style={{ borderBottom:`1px solid ${C.border}` }}>
                         <td style={{ padding:"8px", color: totalActual > 0 ? C.text : C.muted }}>{cat.name}</td>
-                        <td style={{ textAlign:"right", padding:"8px", color:C.muted }}>{cat.budget > 0 ? fmt(quarterBudget) : "—"}</td>
+                        <td style={{ textAlign:"right", padding:"8px", color:C.muted }}>{cat.budget > 0 ? fmt(rangeBudget) : "—"}</td>
                         {monthsToShow.map(m => {
                           const actual = monthlyTotals[m][cat.name] || 0;
                           return (
