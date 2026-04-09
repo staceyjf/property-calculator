@@ -63,11 +63,26 @@ function remainingBalance(principal, annualRatePct, monthsElapsed, termMonths = 
   return Math.max(0, principal * Math.pow(1 + r, monthsElapsed) - pmt * (Math.pow(1 + r, monthsElapsed) - 1) / r);
 }
 
+// Offset account: same repayment but interest charged only on (balance − offset).
+// Simulated month-by-month because the offset proportion changes as the balance falls.
+function remainingBalanceWithOffset(principal, annualRatePct, offsetBalance, termMonths, monthsElapsed) {
+  if (principal <= 0 || monthsElapsed <= 0) return Math.max(0, principal);
+  const r   = annualRatePct / 100 / 12;
+  const pmt = monthlyRepayment(principal, annualRatePct, termMonths);
+  let bal = principal;
+  for (let m = 0; m < monthsElapsed && bal > 0; m++) {
+    const interest = Math.max(0, bal - offsetBalance) * r;
+    bal = Math.max(0, bal - (pmt - interest));
+  }
+  return bal;
+}
+
 // ─── Scenario palette ─────────────────────────────────────────────────────────
 const SCEN = {
-  A: { color: "#3d8ef0", label: "A: Keep flat + Invest" },
-  B: { color: "#27c99a", label: "B: Sell + Buy house"   },
-  C: { color: "#f0a020", label: "C: Status quo"         },
+  A: { color: "#3d8ef0", label: "A: Keep flat + Invest"    },
+  B: { color: "#27c99a", label: "B: Sell + Buy house"      },
+  C: { color: "#9d7ff5", label: "C: Reno + Sell 2027"      },
+  D: { color: "#f0a020", label: "D: Keep flat + Offset"    },
 };
 
 // ─── Default lifecycle events ─────────────────────────────────────────────────
@@ -143,7 +158,7 @@ export default function PropertyModel({ onSwitch }) {
   // Assumptions
   const [inflationRate,   setInflationRate]   = useState(3);
   const [incomeGrowth,    setIncomeGrowth]    = useState(3.5);
-  const [propertyGrowth,  setPropertyGrowth]  = useState(6.9); // Collaroy Plateau CAGR 2017-2025
+  const [propertyGrowth,  setPropertyGrowth]  = useState(5.5); // long-run excl. COVID spike
   const [rentGrowth,      setRentGrowth]      = useState(4);
 
   // Scenario A — keep flat + investment property
@@ -156,8 +171,12 @@ export default function PropertyModel({ onSwitch }) {
   const [housePrice, setHousePrice] = useState(2600000); // median Sep25-Mar26
   const [houseRate,  setHouseRate]  = useState(5.89);
 
-  // Scenario C — keep flat, invest cash
-  const [cashReturn, setCashReturn] = useState(7);
+  // Scenario D — keep flat, cash in offset account (no extra rate input needed)
+
+  // Scenario D — reno flat, sell in dSaleYear, buy house
+  const [dSaleYear,    setDSaleYear]    = useState(2027);
+  const [renoCost,     setRenoCost]     = useState(100000);
+  const [renoValueAdd, setRenoValueAdd] = useState(150000);
 
   // Lifecycle events
   const [events, setEvents] = useState(DEFAULT_EVENTS);
@@ -231,7 +250,6 @@ export default function PropertyModel({ onSwitch }) {
     const incG  = incomeGrowth   / 100;
     const propG = propertyGrowth / 100;
     const rentG = rentGrowth     / 100;
-    const cashG = cashReturn     / 100;
 
     // Fixed nominal mortgage payments (don't inflate)
     const flatMthly = monthlyRepayment(mortgageOwing, currentRate);
@@ -252,6 +270,19 @@ export default function PropertyModel({ onSwitch }) {
     const houseDeposit  = Math.max(0, flatEquity + cashSavings - stampDutyB - sellingCosts);
     const houseMortgage = Math.max(0, housePrice - houseDeposit);
     const houseMthly    = monthlyRepayment(houseMortgage, houseRate);
+
+    // Scenario D: reno flat, sell in dSaleYear, buy house at market price that year
+    const dIdx           = Math.max(1, dSaleYear - CURRENT_YEAR); // years until sale (min 1)
+    const dRenoFlatValue = flatValue + renoValueAdd;              // reno-uplifted flat value base
+    const dFlatSaleV     = dRenoFlatValue * Math.pow(1 + propG, dIdx);
+    const dFlatBalAtSale = remainingBalance(mortgageOwing, currentRate, dIdx * 12);
+    const dSellingCostsD = dFlatSaleV * 0.02;
+    const dHousePriceAtSale = housePrice * Math.pow(1 + propG, dIdx);
+    const dStampDutyD    = nswStampDuty(dHousePriceAtSale);
+    const dCashAtSale    = cashSavings - renoCost;
+    const dHouseDepositD = Math.max(0, (dFlatSaleV - dFlatBalAtSale) + dCashAtSale - dStampDutyD - dSellingCostsD);
+    const dHouseMortgageD = Math.max(0, dHousePriceAtSale - dHouseDepositD);
+    const dHouseMthlyD   = monthlyRepayment(dHouseMortgageD, houseRate);
 
     return Array.from({ length: YEARS + 1 }, (_, i) => {
       const year = CURRENT_YEAR + i;
@@ -297,11 +328,29 @@ export default function PropertyModel({ onSwitch }) {
       const B_cashFlow = netMthlyIncome - nonMortgageExp - houseMthly;
       const B_netWorth = houseV - houseBal;
 
-      // ── Scenario C ─────────────────────────────────────────────────────────
-      const investedCash = cashSavings * Math.pow(1 + cashG, i);
+      // ── Scenario C (Reno + Sell) ────────────────────────────────────────────
+      let C_cashFlow, C_netWorth;
+      if (i < dIdx) {
+        // Pre-sale: reno'd flat, savings reduced by reno cost
+        const cFlatV_i   = dRenoFlatValue * Math.pow(1 + propG, i);
+        const cFlatBal_i = remainingBalance(mortgageOwing, currentRate, i * 12);
+        C_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly;
+        C_netWorth = (cFlatV_i - cFlatBal_i) + (cashSavings - renoCost);
+      } else {
+        // Post-sale: in new house, mortgage from sale year
+        const yrs      = i - dIdx;
+        const cHouseV  = dHousePriceAtSale * Math.pow(1 + propG, yrs);
+        const cHouseBal = remainingBalance(dHouseMortgageD, houseRate, yrs * 12);
+        C_cashFlow = netMthlyIncome - nonMortgageExp - dHouseMthlyD;
+        C_netWorth = cHouseV - cHouseBal;
+      }
 
-      const C_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly;
-      const C_netWorth = flatEq + investedCash;
+      // ── Scenario D (Offset) ─────────────────────────────────────────────────
+      // Repayment is the same as status quo; interest charged only on (balance − offset).
+      // Benefit is purely faster equity growth — cash remains accessible in offset.
+      const offsetBal  = remainingBalanceWithOffset(mortgageOwing, currentRate, cashSavings, 300, i * 12);
+      const D_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly;
+      const D_netWorth = flatV - offsetBal + cashSavings;
 
       return {
         year,
@@ -310,14 +359,16 @@ export default function PropertyModel({ onSwitch }) {
         A: { cashFlow: Math.round(A_cashFlow), netWorth: Math.round(A_netWorth) },
         B: { cashFlow: Math.round(B_cashFlow), netWorth: Math.round(B_netWorth) },
         C: { cashFlow: Math.round(C_cashFlow), netWorth: Math.round(C_netWorth) },
+        D: { cashFlow: Math.round(D_cashFlow), netWorth: Math.round(D_netWorth) },
       };
     });
   }, [
     mortgageOwing, currentRate, flatValue, cashSavings,
     monthlyNetIncome, baseMonthlyLiving, baseMonthlyChildcare,
-    inflationRate, incomeGrowth, propertyGrowth, rentGrowth, cashReturn,
+    inflationRate, incomeGrowth, propertyGrowth, rentGrowth,
     invPrice, invRate, weeklyRent, marginalTaxRate,
     housePrice, houseRate,
+    dSaleYear, renoCost, renoValueAdd,
     events,
   ]);
 
@@ -327,12 +378,14 @@ export default function PropertyModel({ onSwitch }) {
     [SCEN.A.label]: d.A.cashFlow,
     [SCEN.B.label]: d.B.cashFlow,
     [SCEN.C.label]: d.C.cashFlow,
+    [SCEN.D.label]: d.D.cashFlow,
   }));
   const netWorthChart = projData.map(d => ({
     year: d.year,
     [SCEN.A.label]: d.A.netWorth,
     [SCEN.B.label]: d.B.netWorth,
     [SCEN.C.label]: d.C.netWorth,
+    [SCEN.D.label]: d.D.netWorth,
   }));
   const eventYears = events.map(e => e.year);
 
@@ -368,6 +421,19 @@ export default function PropertyModel({ onSwitch }) {
   const houseDepositDisp = Math.max(0, flatEquity + cashSavings - stampDutyBDisp - sellingCostsDisp);
   const houseMortgageAmt = Math.max(0, housePrice - houseDepositDisp);
 
+  // Scenario D display values
+  const dIdxDisp         = Math.max(1, dSaleYear - CURRENT_YEAR);
+  const pG               = propertyGrowth / 100;
+  const dRenoFlatDisp    = flatValue + renoValueAdd;
+  const dFlatSaleDisp    = dRenoFlatDisp * Math.pow(1 + pG, dIdxDisp);
+  const dFlatBalDisp     = remainingBalance(mortgageOwing, currentRate, dIdxDisp * 12);
+  const dSellCostsDisp   = dFlatSaleDisp * 0.02;
+  const dHousePriceDisp  = housePrice * Math.pow(1 + pG, dIdxDisp);
+  const dStampDutyDDisp  = nswStampDuty(dHousePriceDisp);
+  const dCashDisp        = cashSavings - renoCost;
+  const dDepositDDisp    = Math.max(0, (dFlatSaleDisp - dFlatBalDisp) + dCashDisp - dStampDutyDDisp - dSellCostsDisp);
+  const dMortgageDDisp   = Math.max(0, dHousePriceDisp - dDepositDDisp);
+
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div style={{ fontFamily: "'DM Mono','Fira Code',monospace", background: PAL.bg, minHeight: "100vh", color: PAL.text, padding: 24, fontSize: 13 }}>
@@ -378,7 +444,7 @@ export default function PropertyModel({ onSwitch }) {
           <div>
             <div style={{ fontSize: 20, fontWeight: 700, color: "#eef4ff" }}>Property Scenario Planner</div>
             <div style={{ fontSize: 11, color: PAL.muted, marginTop: 3 }}>
-              20-year projection · Northern Beaches · Collaroy Plateau CAGR 6.9% (2017–2025)
+              20-year projection · Northern Beaches · long-run ~5.5% p.a. (excl. COVID spike)
             </div>
           </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -388,7 +454,7 @@ export default function PropertyModel({ onSwitch }) {
                 </button>
               : <button onClick={loadFromSheet} disabled={loadStatus === "loading"}
                   style={{ background: loadStatus?.done ? "#1a5a3a" : "#1a4a8a", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
-                  {loadStatus === "loading" ? "Loading…" : loadStatus?.done ? `✓ Loaded (${loadStatus.months}mo avg)` : "Load from Sheet →"}
+                  {loadStatus === "loading" ? "Loading…" : loadStatus?.done ? `✓ Loaded (annual ÷ 12)` : "Load from Sheet →"}
                 </button>
             }
             {loadStatus?.error && <span style={{ fontSize: 10, color: PAL.red }}>{loadStatus.error}</span>}
@@ -406,7 +472,7 @@ export default function PropertyModel({ onSwitch }) {
         </div>
 
         {/* Inputs */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 12, marginBottom: 14 }}>
 
           {/* Current situation */}
           <div style={{ background: PAL.card, border: `1px solid ${PAL.border}`, borderRadius: 12, padding: 16 }}>
@@ -462,12 +528,30 @@ export default function PropertyModel({ onSwitch }) {
             </div>
           </div>
 
-          {/* Scenario C + Assumptions */}
+          {/* Scenario C (Reno + Sell) + Assumptions */}
           <div style={{ display: "grid", gap: 12 }}>
-            <div style={{ background: "#14100a", border: `1px solid ${PAL.amber}55`, borderRadius: 12, padding: 16 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: PAL.amber, marginBottom: 2 }}>Scenario C</div>
-              <div style={{ fontSize: 10, color: PAL.muted, marginBottom: 12 }}>Keep flat + invest cash savings</div>
-              <Field label="Investment Return %" value={cashReturn} onChange={setCashReturn} step={0.5} noPrefix />
+            <div style={{ background: "#100a18", border: `1px solid ${PAL.purple}55`, borderRadius: 12, padding: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: PAL.purple, marginBottom: 2 }}>Scenario C</div>
+              <div style={{ fontSize: 10, color: PAL.muted, marginBottom: 12 }}>Reno flat, sell + buy house in {dSaleYear}</div>
+              <div style={{ display: "grid", gap: 9 }}>
+                <Field label="Reno Cost"      value={renoCost}     onChange={setRenoCost} />
+                <Field label="Reno Value Add" value={renoValueAdd} onChange={setRenoValueAdd} />
+                <div>
+                  <span style={LBL}>Sale Year</span>
+                  <input type="text" inputMode="numeric" value={dSaleYear} style={INP}
+                    onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n) && n >= CURRENT_YEAR + 1) setDSaleYear(n); }} />
+                </div>
+                <div style={{ background: "#060d18", borderRadius: 6, padding: "8px 10px", fontSize: 10, color: PAL.muted, lineHeight: 1.8 }}>
+                  Flat (reno'd + {dIdxDisp}yr growth): {fmt(dFlatSaleDisp)}<br />
+                  <span style={{ color: PAL.red }}>− Mortgage bal: {fmt(dFlatBalDisp)}</span><br />
+                  <span style={{ color: PAL.red }}>− Selling costs: {fmt(dSellCostsDisp)}</span><br />
+                  Cash avail (savings − reno): {fmt(dCashDisp)}<br />
+                  House price in {dSaleYear}: {fmt(dHousePriceDisp)}<br />
+                  <span style={{ color: PAL.red }}>− Stamp duty: {fmt(dStampDutyDDisp)}</span><br />
+                  Deposit: {fmt(dDepositDDisp)} · Mortgage: {fmt(dMortgageDDisp)}<br />
+                  Monthly repayment: {fmt(monthlyRepayment(dMortgageDDisp, houseRate))}
+                </div>
+              </div>
             </div>
             <div style={{ background: PAL.card, border: `1px solid ${PAL.border}`, borderRadius: 12, padding: 16 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: PAL.muted, marginBottom: 10 }}>Assumptions</div>
@@ -477,6 +561,22 @@ export default function PropertyModel({ onSwitch }) {
                 <Field label="Property Growth %"  value={propertyGrowth} onChange={setPropertyGrowth} step={0.1} noPrefix />
                 <Field label="Rent Growth %"      value={rentGrowth}     onChange={setRentGrowth}     step={0.5} noPrefix />
               </div>
+            </div>
+          </div>
+
+          {/* Scenario D (Offset) */}
+          <div style={{ background: "#14100a", border: `1px solid ${PAL.amber}55`, borderRadius: 12, padding: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: PAL.amber, marginBottom: 2 }}>Scenario D</div>
+            <div style={{ fontSize: 10, color: PAL.muted, marginBottom: 12 }}>Keep flat — cash in offset account</div>
+            <div style={{ background: "#060d18", borderRadius: 6, padding: "8px 10px", fontSize: 10, color: PAL.muted, lineHeight: 1.9, marginTop: 8 }}>
+              Offset balance: {fmt(cashSavings)}<br />
+              Effective interest on: {fmt(mortgageOwing)} − {fmt(cashSavings)} = {fmt(mortgageOwing - cashSavings)}<br />
+              Monthly interest saving: {fmt(cashSavings * (currentRate / 100) / 12)}/mo<br />
+              <span style={{ color: PAL.amber }}>
+                Equivalent return: {currentRate}% guaranteed, tax-free<br />
+                vs 7% invested @ 45% tax = ~{(7 * (1 - 0.45)).toFixed(1)}% net
+              </span><br />
+              Same repayment as status quo — benefit shows in faster equity buildup.
             </div>
           </div>
         </div>
@@ -516,7 +616,7 @@ export default function PropertyModel({ onSwitch }) {
         </div>
 
         {/* Scenario summary cards */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, marginBottom: 14 }}>
           {Object.entries(SCEN).map(([k, s]) => (
             <div key={k} style={{ background: PAL.card, border: `1px solid ${s.color}44`, borderRadius: 12, padding: 16 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: s.color, marginBottom: 10 }}>{s.label}</div>
@@ -548,7 +648,7 @@ export default function PropertyModel({ onSwitch }) {
           />
           <ChartCard
             title="Net Worth"
-            sub="Property equity + invested cash across all three scenarios"
+            sub="Property equity + invested cash across all four scenarios"
             data={netWorthChart}
             yFmt={fmtM}
           />
@@ -563,7 +663,7 @@ export default function PropertyModel({ onSwitch }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${PAL.border}` }}>
-                  {["Year", "Net income/mo", "Expenses/mo", "CF: A", "CF: B", "CF: C", "Worth: A", "Worth: B", "Worth: C"].map(h => (
+                  {["Year", "Net income/mo", "Expenses/mo", "CF: A", "CF: B", "CF: C", "CF: D", "Worth: A", "Worth: B", "Worth: C", "Worth: D"].map(h => (
                     <th key={h} style={{ textAlign: "right", padding: "6px 8px", color: PAL.muted, fontWeight: 400, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -578,12 +678,12 @@ export default function PropertyModel({ onSwitch }) {
                       </td>
                       <td style={{ textAlign: "right", padding: "5px 8px", color: PAL.green }}>{fmt(d.income)}</td>
                       <td style={{ textAlign: "right", padding: "5px 8px", color: PAL.amber }}>{fmt(d.expenses)}</td>
-                      {["A", "B", "C"].map(k => (
+                      {["A", "B", "C", "D"].map(k => (
                         <td key={k} style={{ textAlign: "right", padding: "5px 8px", color: d[k].cashFlow >= 0 ? PAL.green : PAL.red }}>
                           {fmt(d[k].cashFlow)}
                         </td>
                       ))}
-                      {["A", "B", "C"].map(k => (
+                      {["A", "B", "C", "D"].map(k => (
                         <td key={k} style={{ textAlign: "right", padding: "5px 8px", color: PAL.muted }}>
                           {fmtM(d[k].netWorth)}
                         </td>
