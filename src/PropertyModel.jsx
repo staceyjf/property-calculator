@@ -1,6 +1,22 @@
 import React, { useState, useMemo } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
-import { SPREADSHEET_ID, ACTUALS_TAB_NAME, INCOME } from "./config.js";
+import { SPREADSHEET_ID, ACTUALS_TAB_NAME, INCOME, SHEET_CATEGORIES } from "./config.js";
+
+// ─── Budget-based monthly baselines (used as initial defaults before sheet load) ─
+// annual/quarterly → amortise; irregular → amortise via budget/12; fixedBudget/regular → use as-is
+function monthlyFromBudget(isChildcare) {
+  return Math.round(
+    SHEET_CATEGORIES
+      .filter(c => !c.exclude && !!c.childcare === isChildcare)
+      .reduce((sum, c) => {
+        if (c.quarterly)              return sum + c.budget / 3;
+        if (c.annual || c.irregular)  return sum + c.budget / 12;
+        return sum + c.budget; // regular monthly or fixedBudget
+      }, 0)
+  );
+}
+const BUDGET_MONTHLY_LIVING    = monthlyFromBudget(false); // incl. mortgage
+const BUDGET_MONTHLY_CHILDCARE = monthlyFromBudget(true);
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CURRENT_YEAR = 2026;
@@ -18,6 +34,17 @@ function calcTax(income) {
   if (income <= 120000) return 5092  + (income - 45000)  * 0.325;
   if (income <= 180000) return 29467 + (income - 120000) * 0.37;
   return 51667 + (income - 180000) * 0.45;
+}
+
+// ─── NSW Stamp Duty ───────────────────────────────────────────────────────────
+function nswStampDuty(price) {
+  if (price <= 14000)    return price * 0.0125;
+  if (price <= 30000)    return 175   + (price - 14000)   * 0.015;
+  if (price <= 80000)    return 415   + (price - 30000)   * 0.0175;
+  if (price <= 300000)   return 1290  + (price - 80000)   * 0.035;
+  if (price <= 1000000)  return 8990  + (price - 300000)  * 0.045;
+  if (price <= 3000000)  return 40490 + (price - 1000000) * 0.055;
+  return 150490 + (price - 3000000) * 0.07;
 }
 
 // ─── Mortgage helpers ─────────────────────────────────────────────────────────
@@ -44,10 +71,13 @@ const SCEN = {
 };
 
 // ─── Default lifecycle events ─────────────────────────────────────────────────
+// endYear (optional): first year the cost no longer applies (i.e. exclusive upper bound)
+// Year 5 → Year 12 = 8 years; Child 1 starts Yr5 2030 → finishes Yr12 2037 (endYear 2038)
+//                             Child 2 starts Yr5 2032 → finishes Yr12 2039 (endYear 2040)
 const DEFAULT_EVENTS = [
-  { id: 1, year: 2027, label: "Youngest starts school (childcare → OOSH ×2)", monthlyDelta: -3200 },
-  { id: 2, year: 2032, label: "Child 1: private school Year 5",                monthlyDelta: Math.round(35000 / 12) },
-  { id: 3, year: 2034, label: "Child 2: private school Year 5",                monthlyDelta: Math.round(35000 / 12) },
+  { id: 1, year: 2027,                label: "Youngest starts school (childcare → OOSH ×2)", monthlyDelta: -3200 },
+  { id: 2, year: 2030, endYear: 2038, label: "Child 1: private school (Yr 5–12)",            monthlyDelta: Math.round(35000 / 12) },
+  { id: 3, year: 2032, endYear: 2040, label: "Child 2: private school (Yr 5–12)",            monthlyDelta: Math.round(35000 / 12) },
 ];
 
 // ─── Shared styles ────────────────────────────────────────────────────────────
@@ -102,13 +132,13 @@ export default function PropertyModel({ onSwitch }) {
   const [flatValue,    setFlatValue]    = useState(1850000);
   const [mortgageOwing, setMortgageOwing] = useState(1200000);
   const [currentRate,  setCurrentRate]  = useState(5.89);
-  const [cashSavings,  setCashSavings]  = useState(0);
+  const [cashSavings,  setCashSavings]  = useState(150000);
 
   // Income & expenses (overridden by "Load from Sheet")
   // These are NET take-home figures (after PAYG) — do NOT apply calcTax() again
   const [monthlyNetIncome,     setMonthlyNetIncome]     = useState(INCOME.reduce((s, p) => s + p.monthly, 0));
-  const [baseMonthlyLiving,    setBaseMonthlyLiving]    = useState(15000);  // includes existing mortgage
-  const [baseMonthlyChildcare, setBaseMonthlyChildcare] = useState(4000);
+  const [baseMonthlyLiving,    setBaseMonthlyLiving]    = useState(BUDGET_MONTHLY_LIVING);    // full budget incl. annual items; overridden by "Load from Sheet"
+  const [baseMonthlyChildcare, setBaseMonthlyChildcare] = useState(BUDGET_MONTHLY_CHILDCARE); // same
 
   // Assumptions
   const [inflationRate,   setInflationRate]   = useState(3);
@@ -117,9 +147,10 @@ export default function PropertyModel({ onSwitch }) {
   const [rentGrowth,      setRentGrowth]      = useState(4);
 
   // Scenario A — keep flat + investment property
-  const [invPrice,   setInvPrice]   = useState(1000000);
-  const [invRate,    setInvRate]    = useState(6.5);
-  const [weeklyRent, setWeeklyRent] = useState(700);
+  const [invPrice,       setInvPrice]       = useState(1000000);
+  const [invRate,        setInvRate]        = useState(6.5);
+  const [weeklyRent,     setWeeklyRent]     = useState(700);
+  const [marginalTaxRate, setMarginalTaxRate] = useState(45); // Andrew's top bracket
 
   // Scenario B — sell flat + buy Collaroy Plateau house
   const [housePrice, setHousePrice] = useState(2600000); // median Sep25-Mar26
@@ -162,31 +193,31 @@ export default function PropertyModel({ onSwitch }) {
       const labelRow  = values[0] || [];
       const actualCols = labelRow.reduce((acc, l, i) => (i > 0 && l === "Actual" ? [...acc, i] : acc), []);
       if (!actualCols.length) throw new Error("No reconciled months found");
-      // Median: robust against partial months (e.g. April only half-imported)
-      const median = name => {
+
+      // Find the Totals column — full-year blend of actuals + budget, just divide by 12
+      const totalCol = labelRow.findIndex(l => (l || "").trim().toLowerCase() === "totals");
+      if (totalCol === -1) throw new Error("No Totals column found in sheet");
+
+      const getTotal = name => {
         const row = values.find(r => (r[0] || "").trim().toLowerCase() === name.toLowerCase());
         if (!row) return 0;
-        const vals = actualCols
-          .map(c => parseFloat((row[c] || "0").replace(/[$,]/g, "")) || 0)
-          .filter(v => v > 0)
-          .sort((a, b) => a - b);
-        if (!vals.length) return 0;
-        const mid = Math.floor(vals.length / 2);
-        return vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
+        return parseFloat((row[totalCol] || "0").replace(/[$,]/g, "")) || 0;
       };
-      // Most recent month: use for income to reflect latest salary
+
+      // Most recent actual month: use for income to capture latest salary
       const mostRecent = name => {
         const row = values.find(r => (r[0] || "").trim().toLowerCase() === name.toLowerCase());
         if (!row) return 0;
         return parseFloat((row[actualCols[actualCols.length - 1]] || "0").replace(/[$,]/g, "")) || 0;
       };
-      const living = median("Living Total");
-      const cc     = median("Childcare Total");
-      const income = mostRecent("Income");  // April = new salary
+
+      const living = getTotal("Living Total") / 12;
+      const cc     = getTotal("Childcare Total") / 12;
+      const income = mostRecent("Income");  // use most-recent month to pick up latest salary
       const loaded = {};
-      if (living > 0)  { setBaseMonthlyLiving(Math.round(living));      loaded.living  = Math.round(living); }
-      if (cc > 0)      { setBaseMonthlyChildcare(Math.round(cc));        loaded.cc      = Math.round(cc); }
-      if (income > 0)  { setMonthlyNetIncome(Math.round(income));         loaded.income  = Math.round(income); }
+      if (living > 0)  { setBaseMonthlyLiving(Math.round(living));   loaded.living  = Math.round(living); }
+      if (cc > 0)      { setBaseMonthlyChildcare(Math.round(cc));     loaded.cc      = Math.round(cc); }
+      if (income > 0)  { setMonthlyNetIncome(Math.round(income));     loaded.income  = Math.round(income); }
       console.log("[Sheet load]", loaded);
       setLoadStatus({ done: true, months: actualCols.length, loaded });
     } catch (e) {
@@ -208,20 +239,27 @@ export default function PropertyModel({ onSwitch }) {
     // Non-mortgage base — this part inflates
     const baseNonMortgage = Math.max(0, baseMonthlyLiving - flatMthly) + baseMonthlyChildcare;
 
-    // Scenario A: investment property
-    const invMortgage = Math.max(0, invPrice - cashSavings);
+    // Scenario A: investment property — stamp duty comes out of savings first
+    const stampDutyA  = nswStampDuty(invPrice);
+    const invDeposit  = Math.max(0, cashSavings - stampDutyA);
+    const invMortgage = Math.max(0, invPrice - invDeposit);
     const invMthly    = monthlyRepayment(invMortgage, invRate);
 
-    // Scenario B: sell flat → buy house
+    // Scenario B: sell flat → buy house — stamp duty + agent commission (~2%) reduce deposit
     const flatEquity    = flatValue - mortgageOwing;
-    const houseMortgage = Math.max(0, housePrice - flatEquity - cashSavings);
+    const stampDutyB    = nswStampDuty(housePrice);
+    const sellingCosts  = flatValue * 0.02; // ~2% agent commission
+    const houseDeposit  = Math.max(0, flatEquity + cashSavings - stampDutyB - sellingCosts);
+    const houseMortgage = Math.max(0, housePrice - houseDeposit);
     const houseMthly    = monthlyRepayment(houseMortgage, houseRate);
 
     return Array.from({ length: YEARS + 1 }, (_, i) => {
       const year = CURRENT_YEAR + i;
 
       // Lifecycle: sum all active event deltas (in today's dollars, then inflated with base)
-      const eventDelta = events.reduce((sum, ev) => year >= ev.year ? sum + ev.monthlyDelta : sum, 0);
+      const eventDelta = events.reduce((sum, ev) =>
+        year >= ev.year && (ev.endYear == null || year < ev.endYear)
+          ? sum + ev.monthlyDelta : sum, 0);
       const nonMortgageExp = Math.max(0, baseNonMortgage + eventDelta) * Math.pow(1 + inf, i);
 
       // Income after tax
@@ -234,16 +272,22 @@ export default function PropertyModel({ onSwitch }) {
       const flatEq  = flatV - flatBal;
 
       // ── Scenario A ─────────────────────────────────────────────────────────
-      const invV   = invPrice * Math.pow(1 + propG, i);
-      const invBal = remainingBalance(invMortgage, invRate, i * 12);
-      const rental = weeklyRent * 52 / 12 * Math.pow(1 + rentG, i);
-      // Negative gearing: interest + 1% maintenance vs rental income; 37% marginal rate
-      const invInterest = invBal * (invRate / 100) / 12;
-      const invMaint    = invV * 0.01 / 12;
-      const rentalLoss  = rental - invInterest - invMaint;
-      const negGear     = rentalLoss < 0 ? Math.abs(rentalLoss) * 0.37 : 0;
+      const invV        = invPrice * Math.pow(1 + propG, i);
+      const invBal      = remainingBalance(invMortgage, invRate, i * 12);
+      const grossRental = weeklyRent * 52 / 12 * Math.pow(1 + rentG, i);
+      const mgmtFee     = grossRental * 0.10; // 10% property management fee (tax-deductible)
+      const netRental   = grossRental - mgmtFee; // actual cash that arrives in your account
+      // Deductibles for tax: interest + maintenance (1% of value) + management fee
+      const invInterest    = invBal * (invRate / 100) / 12;
+      const invMaint       = invV * 0.01 / 12;
+      const taxableRental  = grossRental - invInterest - invMaint - mgmtFee;
+      // Negative = loss → tax offset at owner's marginal rate; Positive = profit → taxed at same rate
+      const mtr = marginalTaxRate / 100;
+      const rentalTaxEffect = taxableRental < 0
+        ? Math.abs(taxableRental) * mtr    // refund (positive cash flow)
+        : -taxableRental * mtr;            // tax liability (negative cash flow)
 
-      const A_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly + rental + negGear - invMthly;
+      const A_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly + netRental + rentalTaxEffect - invMthly;
       const A_netWorth = flatEq + (invV - invBal);
 
       // ── Scenario B ─────────────────────────────────────────────────────────
@@ -272,7 +316,7 @@ export default function PropertyModel({ onSwitch }) {
     mortgageOwing, currentRate, flatValue, cashSavings,
     monthlyNetIncome, baseMonthlyLiving, baseMonthlyChildcare,
     inflationRate, incomeGrowth, propertyGrowth, rentGrowth, cashReturn,
-    invPrice, invRate, weeklyRent,
+    invPrice, invRate, weeklyRent, marginalTaxRate,
     housePrice, houseRate,
     events,
   ]);
@@ -315,9 +359,14 @@ export default function PropertyModel({ onSwitch }) {
   );
 
   // ── Derived display values ──────────────────────────────────────────────────
-  const flatEquity      = flatValue - mortgageOwing;
-  const invMortgageAmt  = Math.max(0, invPrice - cashSavings);
-  const houseMortgageAmt = Math.max(0, housePrice - flatEquity - cashSavings);
+  const flatEquity       = flatValue - mortgageOwing;
+  const stampDutyADisp   = nswStampDuty(invPrice);
+  const invDepositDisp   = Math.max(0, cashSavings - stampDutyADisp);
+  const invMortgageAmt   = Math.max(0, invPrice - invDepositDisp);
+  const stampDutyBDisp   = nswStampDuty(housePrice);
+  const sellingCostsDisp = flatValue * 0.02;
+  const houseDepositDisp = Math.max(0, flatEquity + cashSavings - stampDutyBDisp - sellingCostsDisp);
+  const houseMortgageAmt = Math.max(0, housePrice - houseDepositDisp);
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -378,15 +427,18 @@ export default function PropertyModel({ onSwitch }) {
             <div style={{ fontSize: 12, fontWeight: 700, color: PAL.blue, marginBottom: 2 }}>Scenario A</div>
             <div style={{ fontSize: 10, color: PAL.muted, marginBottom: 12 }}>Keep flat + buy investment property</div>
             <div style={{ display: "grid", gap: 9 }}>
-              <Field label="Investment Property Price" value={invPrice}   onChange={setInvPrice} />
-              <Field label="Investment Rate %"         value={invRate}    onChange={setInvRate}  step={0.01} noPrefix />
-              <Field label="Weekly Rent"               value={weeklyRent} onChange={setWeeklyRent} step={50} />
+              <Field label="Investment Property Price"  value={invPrice}        onChange={setInvPrice} />
+              <Field label="Investment Rate %"          value={invRate}         onChange={setInvRate}  step={0.01} noPrefix />
+              <Field label="Weekly Rent"                value={weeklyRent}      onChange={setWeeklyRent} step={50} />
+              <Field label="Owner's Marginal Tax Rate %" value={marginalTaxRate} onChange={setMarginalTaxRate} step={1} noPrefix />
               <div style={{ background: "#060d18", borderRadius: 6, padding: "8px 10px", fontSize: 10, color: PAL.muted, lineHeight: 1.8 }}>
-                Deposit (savings): {fmt(cashSavings)}<br />
+                Savings: {fmt(cashSavings)}<br />
+                <span style={{ color: PAL.red }}>− Stamp duty: {fmt(stampDutyADisp)}</span><br />
+                Deposit: {fmt(invDepositDisp)}<br />
                 Mortgage: {fmt(invMortgageAmt)}<br />
                 Monthly repayment: {fmt(monthlyRepayment(invMortgageAmt, invRate))}<br />
-                Monthly rental: {fmt(weeklyRent * 52 / 12)}<br />
-                <span style={{ color: PAL.blue }}>Neg. gearing @ 37% marginal</span>
+                Gross rental: {fmt(weeklyRent * 52 / 12)} · Net (−10% mgmt): {fmt(weeklyRent * 52 / 12 * 0.9)}<br />
+                <span style={{ color: PAL.blue }}>Neg. gearing @ {marginalTaxRate}% · Profit taxed @ {marginalTaxRate}%</span>
               </div>
             </div>
           </div>
@@ -401,7 +453,9 @@ export default function PropertyModel({ onSwitch }) {
               <div style={{ background: "#060d18", borderRadius: 6, padding: "8px 10px", fontSize: 10, color: PAL.muted, lineHeight: 1.8 }}>
                 Flat equity: {fmt(flatEquity)}<br />
                 + Cash savings: {fmt(cashSavings)}<br />
-                Deposit total: {fmt(flatEquity + cashSavings)}<br />
+                <span style={{ color: PAL.red }}>− Stamp duty: {fmt(stampDutyBDisp)}</span><br />
+                <span style={{ color: PAL.red }}>− Selling costs (~2%): {fmt(sellingCostsDisp)}</span><br />
+                Deposit: {fmt(houseDepositDisp)}<br />
                 Mortgage: {fmt(houseMortgageAmt)}<br />
                 Monthly repayment: {fmt(monthlyRepayment(houseMortgageAmt, houseRate))}
               </div>
@@ -435,11 +489,18 @@ export default function PropertyModel({ onSwitch }) {
               <div key={ev.id} style={{ background: "#060d18", borderRadius: 8, padding: 10 }}>
                 <div style={{ fontSize: 10, color: PAL.muted, marginBottom: 8 }}>{ev.label}</div>
                 <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                  <div style={{ width: 72 }}>
-                    <span style={LBL}>Year</span>
+                  <div style={{ width: 66 }}>
+                    <span style={LBL}>Start year</span>
                     <input type="text" inputMode="numeric" value={ev.year} style={INP}
                       onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) setEvents(evs => evs.map(x => x.id === ev.id ? { ...x, year: n } : x)); }} />
                   </div>
+                  {ev.endYear != null && (
+                    <div style={{ width: 66 }}>
+                      <span style={LBL}>End year</span>
+                      <input type="text" inputMode="numeric" value={ev.endYear} style={INP}
+                        onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) setEvents(evs => evs.map(x => x.id === ev.id ? { ...x, endYear: n } : x)); }} />
+                    </div>
+                  )}
                   <div style={{ flex: 1 }}>
                     <span style={LBL}>Monthly Δ $</span>
                     <input type="text" inputMode="numeric" value={ev.monthlyDelta} style={INP}
@@ -496,7 +557,7 @@ export default function PropertyModel({ onSwitch }) {
         {/* Detail table */}
         <div style={{ background: PAL.card, border: `1px solid ${PAL.border}`, borderRadius: 12, padding: 16 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: PAL.text, marginBottom: 10 }}>
-            Year-by-Year Detail <span style={{ color: PAL.muted, fontWeight: 400 }}>(every 2 years · ★ = lifecycle event)</span>
+            Year-by-Year Detail <span style={{ color: PAL.muted, fontWeight: 400 }}>(every 2 years + event years · ★ = lifecycle event)</span>
           </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
@@ -508,7 +569,7 @@ export default function PropertyModel({ onSwitch }) {
                 </tr>
               </thead>
               <tbody>
-                {projData.filter((_, i) => i % 2 === 0).map(d => {
+                {projData.filter((d, i) => i % 2 === 0 || eventYears.includes(d.year)).map(d => {
                   const isEvent = eventYears.includes(d.year);
                   return (
                     <tr key={d.year} style={{ borderBottom: `1px solid ${PAL.border}22`, background: isEvent ? "#0a1628" : "transparent" }}>
