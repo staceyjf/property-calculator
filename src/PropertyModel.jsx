@@ -436,7 +436,7 @@ export default function PropertyModel({ onSwitch }) {
                 <div style={{ fontSize: 10, color: PAL.muted, marginBottom: 8 }}>{ev.label}</div>
                 <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
                   <div style={{ width: 72 }}>
-                    <span style={lbl}>Year</span>
+                    <span style={LBL}>Year</span>
                     <input type="text" inputMode="numeric" value={ev.year} style={INP}
                       onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) setEvents(evs => evs.map(x => x.id === ev.id ? { ...x, year: n } : x)); }} />
                   </div>
