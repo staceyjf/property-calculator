@@ -291,10 +291,8 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
       const formatRequests = [];
 
       for (const m of monthsToShow) {
-        const monthLabel = `${MONTHS[m].substring(0, 3)} ${year}`;
-        const monthCol = dateRow.findIndex(h =>
-          (h || "").toLowerCase() === monthLabel.toLowerCase()
-        );
+        const dateStr  = `01/${String(m + 1).padStart(2, "0")}/${year}`;
+        const monthCol = dateRow.findIndex(h => (h || "").trim() === dateStr);
         if (monthCol === -1) continue;
 
         // Write category actuals (including fixedMonthly transfers)
@@ -326,7 +324,6 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         });
       }
 
-      console.log(`[Sheet write] ${valueUpdates.length} value updates, ${formatRequests.length} format requests`, valueUpdates);
 
       if (valueUpdates.length > 0) {
         await sheetsApi(`/values:batchUpdate`, {
@@ -341,7 +338,6 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         });
       }
       const monthLabels = monthsToShow.map(m => MONTHS[m].substring(0, 3)).join(", ");
-      console.log(`[Sheet write] Done — ${monthLabels} ${year}`);
       setSheetStatus({ done: true, msg: `✓ Written ${monthLabels} (${valueUpdates.length - monthsToShow.length} rows)` });
     } catch (e) {
       setSheetStatus({ error: e.message });

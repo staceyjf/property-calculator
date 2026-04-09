@@ -4,7 +4,7 @@ import BudgetTrackerComponent from './BudgetTrackerComponent.jsx';
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [mode, setMode] = useState('budget'); // 'budget' or 'property'
+  const [mode, setMode] = useState('property'); // 'budget' or 'property'
 
   return mode === 'property' ? (
     <PropertyModel onSwitch={() => setMode('budget')} />

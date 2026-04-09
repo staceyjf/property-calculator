@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { SPREADSHEET_ID, ACTUALS_TAB_NAME, INCOME } from "./config.js";
 
 const fmt = (n) => "$" + Math.round(n).toLocaleString();
 const fmtK = (n) => (n >= 0 ? "" : "-") + "$" + Math.round(Math.abs(n) / 1000) + "k";
@@ -31,18 +32,74 @@ function borrowingCap(grossIncome, expenses, existingDebt, rate = 0.089) {
 }
 
 export default function PropertyModel({ onSwitch }) {
-  const [flatValue, setFlatValue] = useState(0);
-  const [mortgageOwing, setMortgageOwing] = useState(0);
+  const [flatValue, setFlatValue] = useState(1850000);
+  const [mortgageOwing, setMortgageOwing] = useState(1200000);
   const [housePrice, setHousePrice] = useState(0);
   const [invPropPrice, setInvPropPrice] = useState(0);
   const [cashSavings, setCashSavings] = useState(0);
-  const [interestRate, setInterestRate] = useState(0);
+  const [interestRate, setInterestRate] = useState(5.89);
   const [weeklyRent, setWeeklyRent] = useState(0);
-  const [grossIncome, setGrossIncome] = useState(0);
+  const [grossIncome, setGrossIncome] = useState(INCOME.reduce((s, p) => s + p.monthly, 0) * 12);
   const [monthlyExpenses, setMonthlyExpenses] = useState(0);
   const [schoolFees, setSchoolFees] = useState(0);
   const [activeTab, setActiveTab] = useState("summary");
+  const [googleToken, setGoogleToken] = useState(null);
+  const [loadStatus, setLoadStatus] = useState(null);
   const years = 5;
+
+  const signInGoogle = () => {
+    if (!window.google) { alert("Google sign-in not loaded yet — try again in a moment."); return; }
+    window.google.accounts.oauth2.initTokenClient({
+      client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+      scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+      callback: resp => { if (resp.access_token) setGoogleToken(resp.access_token); },
+    }).requestAccessToken();
+  };
+
+  const sheetsApi = async (path) => {
+    const resp = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}${path}`, {
+      headers: { Authorization: `Bearer ${googleToken}`, "Content-Type": "application/json" },
+    });
+    if (!resp.ok) throw new Error(`Sheets API ${resp.status}: ${await resp.text()}`);
+    return resp.json();
+  };
+
+  const loadFromSheet = async () => {
+    if (!googleToken) { signInGoogle(); return; }
+    setLoadStatus("loading");
+    try {
+      const { values = [] } = await sheetsApi(`/values/${encodeURIComponent(ACTUALS_TAB_NAME)}`);
+      const labelRow = values[0] || [];
+
+      // Find reconciled columns (header row = "Actual"), skip col 0 (labels) and last col (Totals)
+      const actualCols = labelRow.reduce((acc, label, i) => {
+        if (i > 0 && label === "Actual") acc.push(i);
+        return acc;
+      }, []);
+      if (actualCols.length === 0) throw new Error("No reconciled months found — write actuals to the sheet first.");
+
+      // Average a named row across all reconciled columns, stripping currency formatting
+      const avgRow = (name) => {
+        const row = values.find(r => (r[0] || "").trim().toLowerCase() === name.toLowerCase());
+        if (!row) return 0;
+        const vals = actualCols.map(c => parseFloat((row[c] || "0").replace(/[$,]/g, "")) || 0);
+        return vals.reduce((s, v) => s + v, 0) / vals.length;
+      };
+
+      const livingAvg   = avgRow("Living Total");
+      const ccAvg       = avgRow("Childcare Total");
+      const incomeAvg   = avgRow("Income");  // monthly combined
+
+      if (livingAvg > 0)  setMonthlyExpenses(Math.round(livingAvg));
+      if (ccAvg > 0)      setSchoolFees(Math.round(ccAvg));
+      // Income row is monthly — property model grossIncome is annual
+      if (incomeAvg > 0)  setGrossIncome(Math.round(incomeAvg * 12));
+
+      setLoadStatus({ done: true, months: actualCols.length });
+    } catch (e) {
+      setLoadStatus({ error: e.message });
+    }
+  };
 
   const equity = flatValue - mortgageOwing;
   const annualRent = weeklyRent * 52;
@@ -93,9 +150,18 @@ export default function PropertyModel({ onSwitch }) {
             <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>Property Investment Calculator</div>
             <div style={{ fontSize:12, color:C.muted, marginTop:3 }}>Investment projections and borrowing capacity</div>
           </div>
-          <button onClick={onSwitch} style={{ background:C.blue, color:"white", border:"none", borderRadius:8, padding:"10px 20px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>
-            Switch to Budget Tracker
-          </button>
+          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+            {!googleToken
+              ? <button onClick={signInGoogle} style={{ background:"#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"10px 20px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>Connect Google</button>
+              : <button onClick={loadFromSheet} disabled={loadStatus === "loading"} style={{ background: loadStatus?.done ? "#1a5a3a" : "#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"10px 20px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>
+                  {loadStatus === "loading" ? "Loading…" : loadStatus?.done ? `✓ Loaded (${loadStatus.months}mo avg)` : "Load from Sheet →"}
+                </button>
+            }
+            {loadStatus?.error && <span style={{ fontSize:11, color:C.red }}>{loadStatus.error}</span>}
+            <button onClick={onSwitch} style={{ background:C.blue, color:"white", border:"none", borderRadius:8, padding:"10px 20px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>
+              Switch to Budget Tracker
+            </button>
+          </div>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
