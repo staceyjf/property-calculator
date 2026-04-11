@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 import { SPREADSHEET_ID, ACTUALS_TAB_NAME, INCOME, SHEET_CATEGORIES } from "./config.js";
 
@@ -86,13 +86,17 @@ const SCEN = {
 };
 
 // ─── Default lifecycle events ─────────────────────────────────────────────────
-// endYear (optional): first year the cost no longer applies (i.e. exclusive upper bound)
+// endYear (optional): first year the cost/income no longer applies (exclusive upper bound)
+// isIncome: true  → adds to income each year in range (not inflated, not treated as expense)
+// isIncome: false → adds to expenses (positive = more expense, negative = expense saving)
 // Year 5 → Year 12 = 8 years; Child 1 starts Yr5 2030 → finishes Yr12 2037 (endYear 2038)
 //                             Child 2 starts Yr5 2032 → finishes Yr12 2039 (endYear 2040)
 const DEFAULT_EVENTS = [
   { id: 1, year: 2027,                label: "Youngest starts school (childcare → OOSH ×2)", monthlyDelta: -3200 },
   { id: 2, year: 2030, endYear: 2038, label: "Child 1: private school (Yr 5–12)",            monthlyDelta: Math.round(35000 / 12) },
   { id: 3, year: 2032, endYear: 2040, label: "Child 2: private school (Yr 5–12)",            monthlyDelta: Math.round(35000 / 12) },
+  // Income events — set the monthly amount (= annual ÷ 12) and the year range they apply
+  { id: 4, year: 2026, endYear: 2027, label: "UK income (enter annual ÷ 12)",                monthlyDelta: 0, isIncome: true },
 ];
 
 // ─── Shared styles ────────────────────────────────────────────────────────────
@@ -152,6 +156,8 @@ export default function PropertyModel({ onSwitch }) {
   // Income & expenses (overridden by "Load from Sheet")
   // These are NET take-home figures (after PAYG) — do NOT apply calcTax() again
   const [monthlyNetIncome,     setMonthlyNetIncome]     = useState(INCOME.reduce((s, p) => s + p.monthly, 0));
+  const [andrewAnnualBonus,    setAndrewAnnualBonus]    = useState(0);
+  const [staceyAnnualBonus,    setStaceyAnnualBonus]    = useState(0);
   const [baseMonthlyLiving,    setBaseMonthlyLiving]    = useState(BUDGET_MONTHLY_LIVING);    // full budget incl. annual items; overridden by "Load from Sheet"
   const [baseMonthlyChildcare, setBaseMonthlyChildcare] = useState(BUDGET_MONTHLY_CHILDCARE); // same
 
@@ -180,6 +186,20 @@ export default function PropertyModel({ onSwitch }) {
 
   // Lifecycle events
   const [events, setEvents] = useState(DEFAULT_EVENTS);
+  const nextId = useRef(DEFAULT_EVENTS.length + 1);
+  const addEvent = (isIncome) => {
+    const id = ++nextId.current;
+    setEvents(evs => [...evs, {
+      id,
+      year: CURRENT_YEAR,
+      endYear: CURRENT_YEAR + 1,
+      label: isIncome ? "New income event" : "New expense event",
+      monthlyDelta: 0,
+      isIncome,
+    }]);
+  };
+  const removeEvent = id => setEvents(evs => evs.filter(x => x.id !== id));
+  const updateEvent = (id, patch) => setEvents(evs => evs.map(x => x.id === id ? { ...x, ...patch } : x));
 
   // Google Sheets
   const [googleToken, setGoogleToken] = useState(null);
@@ -287,15 +307,15 @@ export default function PropertyModel({ onSwitch }) {
     return Array.from({ length: YEARS + 1 }, (_, i) => {
       const year = CURRENT_YEAR + i;
 
-      // Lifecycle: sum all active event deltas (in today's dollars, then inflated with base)
-      const eventDelta = events.reduce((sum, ev) =>
-        year >= ev.year && (ev.endYear == null || year < ev.endYear)
-          ? sum + ev.monthlyDelta : sum, 0);
-      const nonMortgageExp = Math.max(0, baseNonMortgage + eventDelta) * Math.pow(1 + inf, i);
+      // Lifecycle: split expense events (inflated) from income events (fixed, not inflated)
+      const active = ev => year >= ev.year && (ev.endYear == null || year < ev.endYear);
+      const expenseDelta = events.reduce((sum, ev) => !ev.isIncome && active(ev) ? sum + ev.monthlyDelta : sum, 0);
+      const incomeDelta  = events.reduce((sum, ev) =>  ev.isIncome && active(ev) ? sum + ev.monthlyDelta : sum, 0);
+      const nonMortgageExp = Math.max(0, baseNonMortgage + expenseDelta) * Math.pow(1 + inf, i);
 
-      // Income after tax
-      // Income is already net take-home — grow it at incomeGrowth rate
-      const netMthlyIncome = monthlyNetIncome * Math.pow(1 + incG, i);
+      // Income after tax — salary + annual bonuses grow at incomeGrowth; income events are fixed
+      const baseMthlyIncome = monthlyNetIncome + (andrewAnnualBonus + staceyAnnualBonus) / 12;
+      const netMthlyIncome  = baseMthlyIncome * Math.pow(1 + incG, i) + incomeDelta;
 
       // Flat
       const flatV  = flatValue * Math.pow(1 + propG, i);
@@ -364,7 +384,8 @@ export default function PropertyModel({ onSwitch }) {
     });
   }, [
     mortgageOwing, currentRate, flatValue, cashSavings,
-    monthlyNetIncome, baseMonthlyLiving, baseMonthlyChildcare,
+    monthlyNetIncome, andrewAnnualBonus, staceyAnnualBonus,
+    baseMonthlyLiving, baseMonthlyChildcare,
     inflationRate, incomeGrowth, propertyGrowth, rentGrowth,
     invPrice, invRate, weeklyRent, marginalTaxRate,
     housePrice, houseRate,
@@ -483,6 +504,8 @@ export default function PropertyModel({ onSwitch }) {
               <Field label="Interest Rate %"                   value={currentRate}          onChange={setCurrentRate}  step={0.01} noPrefix />
               <Field label="Cash Savings"                      value={cashSavings}          onChange={setCashSavings} />
               <Field label="Monthly Net Income (take-home)"    value={monthlyNetIncome}     onChange={setMonthlyNetIncome} step={100} />
+              <Field label="Andrew Annual Bonus"               value={andrewAnnualBonus}    onChange={setAndrewAnnualBonus} step={1000} />
+              <Field label="Stacey Annual Bonus"               value={staceyAnnualBonus}    onChange={setStaceyAnnualBonus} step={1000} />
               <Field label="Monthly Living (incl. mortgage)"   value={baseMonthlyLiving}    onChange={setBaseMonthlyLiving} step={100} />
               <Field label="Monthly Childcare"                 value={baseMonthlyChildcare} onChange={setBaseMonthlyChildcare} step={100} />
             </div>
@@ -583,35 +606,63 @@ export default function PropertyModel({ onSwitch }) {
 
         {/* Lifecycle events */}
         <div style={{ background: PAL.card, border: `1px solid ${PAL.border}`, borderRadius: 12, padding: 16, marginBottom: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: PAL.text, marginBottom: 10 }}>Lifecycle Events</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: PAL.text }}>Lifecycle Events</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 10, color: PAL.muted }}>
+                <span style={{ color: PAL.amber }}>■</span> expense &nbsp;
+                <span style={{ color: PAL.green }}>■</span> income (not inflated · enter annual ÷ 12)
+              </span>
+              <button onClick={() => addEvent(true)}
+                style={{ background: "#0a2010", border: `1px solid ${PAL.green}55`, borderRadius: 6, color: PAL.green, fontSize: 10, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+                + Income event
+              </button>
+              <button onClick={() => addEvent(false)}
+                style={{ background: "#1a1000", border: `1px solid ${PAL.amber}55`, borderRadius: 6, color: PAL.amber, fontSize: 10, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+                + Expense event
+              </button>
+            </div>
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-            {events.map(ev => (
-              <div key={ev.id} style={{ background: "#060d18", borderRadius: 8, padding: 10 }}>
-                <div style={{ fontSize: 10, color: PAL.muted, marginBottom: 8 }}>{ev.label}</div>
-                <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                  <div style={{ width: 66 }}>
-                    <span style={LBL}>Start year</span>
-                    <input type="text" inputMode="numeric" value={ev.year} style={INP}
-                      onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) setEvents(evs => evs.map(x => x.id === ev.id ? { ...x, year: n } : x)); }} />
+            {events.map(ev => {
+              const accent = ev.isIncome ? PAL.green : PAL.amber;
+              return (
+                <div key={ev.id} style={{ background: "#060d18", borderRadius: 8, padding: 10, borderLeft: `2px solid ${accent}44` }}>
+                  {/* Label row + delete */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <input
+                      type="text"
+                      value={ev.label}
+                      onChange={e => updateEvent(ev.id, { label: e.target.value })}
+                      style={{ ...INP, fontSize: 10, color: accent, background: "transparent", border: "none", padding: 0, fontWeight: ev.isIncome ? 600 : 400 }}
+                    />
+                    <button onClick={() => removeEvent(ev.id)}
+                      style={{ background: "none", border: "none", color: PAL.muted, fontSize: 13, cursor: "pointer", lineHeight: 1, padding: "0 2px", flexShrink: 0 }}
+                      title="Remove event">×</button>
                   </div>
-                  {ev.endYear != null && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
                     <div style={{ width: 66 }}>
-                      <span style={LBL}>End year</span>
-                      <input type="text" inputMode="numeric" value={ev.endYear} style={INP}
-                        onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) setEvents(evs => evs.map(x => x.id === ev.id ? { ...x, endYear: n } : x)); }} />
+                      <span style={LBL}>Start yr</span>
+                      <input type="text" inputMode="numeric" value={ev.year} style={INP}
+                        onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) updateEvent(ev.id, { year: n }); }} />
                     </div>
-                  )}
-                  <div style={{ flex: 1 }}>
-                    <span style={LBL}>Monthly Δ $</span>
-                    <input type="text" inputMode="numeric" value={ev.monthlyDelta} style={INP}
-                      onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) setEvents(evs => evs.map(x => x.id === ev.id ? { ...x, monthlyDelta: n } : x)); }} />
+                    <div style={{ width: 66 }}>
+                      <span style={LBL}>End yr</span>
+                      <input type="text" inputMode="numeric" value={ev.endYear ?? ""} placeholder="open" style={INP}
+                        onChange={e => { const n = parseInt(e.target.value); updateEvent(ev.id, { endYear: isNaN(n) ? undefined : n }); }} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <span style={LBL}>{ev.isIncome ? "Monthly income $" : "Monthly Δ $"}</span>
+                      <input type="text" inputMode="numeric" value={ev.monthlyDelta} style={INP}
+                        onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) updateEvent(ev.id, { monthlyDelta: n }); }} />
+                    </div>
+                    <span style={{ fontSize: 12, color: ev.isIncome ? PAL.green : (ev.monthlyDelta < 0 ? PAL.green : PAL.amber), paddingBottom: 8 }}>
+                      {ev.isIncome ? "+" : ev.monthlyDelta < 0 ? "↓" : "↑"}{fmtK(Math.abs(ev.monthlyDelta))}/mo
+                    </span>
                   </div>
-                  <span style={{ fontSize: 12, color: ev.monthlyDelta < 0 ? PAL.green : PAL.amber, paddingBottom: 8 }}>
-                    {ev.monthlyDelta < 0 ? "↓" : "↑"}{fmtK(Math.abs(ev.monthlyDelta))}/mo
-                  </span>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
