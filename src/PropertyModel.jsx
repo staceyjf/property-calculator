@@ -652,12 +652,19 @@ export default function PropertyModel({ onSwitch }) {
                         onChange={e => { const n = parseInt(e.target.value); updateEvent(ev.id, { endYear: isNaN(n) ? undefined : n }); }} />
                     </div>
                     <div style={{ flex: 1 }}>
-                      <span style={LBL}>{ev.isIncome ? "Monthly income $" : "Monthly Δ $"}</span>
+                      <span style={LBL}>{ev.isIncome ? "Monthly Δ $ (− = loss)" : "Monthly Δ $"}</span>
                       <input type="text" inputMode="numeric" value={ev.monthlyDelta} style={INP}
                         onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) updateEvent(ev.id, { monthlyDelta: n }); }} />
                     </div>
-                    <span style={{ fontSize: 12, color: ev.isIncome ? PAL.green : (ev.monthlyDelta < 0 ? PAL.green : PAL.amber), paddingBottom: 8 }}>
-                      {ev.isIncome ? "+" : ev.monthlyDelta < 0 ? "↓" : "↑"}{fmtK(Math.abs(ev.monthlyDelta))}/mo
+                    <span style={{ fontSize: 12, paddingBottom: 8, color:
+                      ev.isIncome
+                        ? (ev.monthlyDelta >= 0 ? PAL.green : PAL.red)
+                        : (ev.monthlyDelta <= 0 ? PAL.green : PAL.amber)
+                    }}>
+                      {ev.isIncome
+                        ? (ev.monthlyDelta >= 0 ? "+" : "−")
+                        : (ev.monthlyDelta < 0 ? "↓" : "↑")}
+                      {fmtK(Math.abs(ev.monthlyDelta))}/mo
                     </span>
                   </div>
                 </div>
