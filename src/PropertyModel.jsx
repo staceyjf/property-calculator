@@ -29,11 +29,24 @@ const fmtM = n => "$" + (Math.abs(n) / 1e6).toFixed(2) + "m";
 
 // ─── Tax (AUS 2024/25) ────────────────────────────────────────────────────────
 function calcTax(income) {
-  if (income <= 18200)  return 0;
-  if (income <= 45000)  return (income - 18200) * 0.19;
-  if (income <= 120000) return 5092  + (income - 45000)  * 0.325;
-  if (income <= 180000) return 29467 + (income - 120000) * 0.37;
-  return 51667 + (income - 180000) * 0.45;
+  let baseTax;
+  if (income <= 18200)       baseTax = 0;
+  else if (income <= 45000)  baseTax = (income - 18200) * 0.19;
+  else if (income <= 120000) baseTax = 5092  + (income - 45000)  * 0.325;
+  else if (income <= 180000) baseTax = 29467 + (income - 120000) * 0.37;
+  else                       baseTax = 51667 + (income - 180000) * 0.45;
+  return baseTax + income * 0.02; // + Medicare levy 2%
+}
+
+// Binary search: find gross such that gross − calcTax(gross) ≈ annualNet
+function grossFromNet(annualNet) {
+  if (annualNet <= 0) return 0;
+  let lo = annualNet, hi = annualNet * 3;
+  for (let k = 0; k < 60; k++) {
+    const mid = (lo + hi) / 2;
+    if (mid - calcTax(mid) < annualNet) lo = mid; else hi = mid;
+  }
+  return Math.round((lo + hi) / 2);
 }
 
 // ─── NSW Stamp Duty ───────────────────────────────────────────────────────────
@@ -45,6 +58,14 @@ function nswStampDuty(price) {
   if (price <= 1000000)  return 8990  + (price - 300000)  * 0.045;
   if (price <= 3000000)  return 40490 + (price - 1000000) * 0.055;
   return 150490 + (price - 3000000) * 0.07;
+}
+
+// ─── NSW Land Tax (investment properties only) ────────────────────────────────
+// PPOR is exempt. Threshold 2024-25 = $1,075,000 on unimproved land value.
+function nswLandTax(landValue) {
+  const THRESHOLD = 1075000;
+  if (landValue <= THRESHOLD) return 0;
+  return 100 + (landValue - THRESHOLD) * 0.016;
 }
 
 // ─── Mortgage helpers ─────────────────────────────────────────────────────────
@@ -171,7 +192,13 @@ export default function PropertyModel({ onSwitch }) {
   const [invPrice,       setInvPrice]       = useState(1000000);
   const [invRate,        setInvRate]        = useState(6.5);
   const [weeklyRent,     setWeeklyRent]     = useState(700);
-  const [marginalTaxRate, setMarginalTaxRate] = useState(45); // Andrew's top bracket
+  const [marginalTaxRate,      setMarginalTaxRate]      = useState(45);     // Andrew's top bracket
+  const [invDepreciation,      setInvDepreciation]      = useState(12000);  // Div 43+40 annual (non-cash deduction)
+  const [invLandlordIns,       setInvLandlordIns]       = useState(1800);   // landlord insurance annual
+  const [invCouncilRates,      setInvCouncilRates]      = useState(2200);   // council rates annual
+  const [invStrata,            setInvStrata]            = useState(0);      // strata annual (0 if house)
+  const [invLandValue,         setInvLandValue]         = useState(400000); // unimproved land value for land tax
+  const [invIsIO,              setInvIsIO]              = useState(false);  // interest-only loan toggle
 
   // Scenario B — sell flat + buy Collaroy Plateau house
   const [housePrice, setHousePrice] = useState(2600000); // median Sep25-Mar26
@@ -278,10 +305,13 @@ export default function PropertyModel({ onSwitch }) {
     const baseNonMortgage = Math.max(0, baseMonthlyLiving - flatMthly) + baseMonthlyChildcare;
 
     // Scenario A: investment property — stamp duty comes out of savings first
-    const stampDutyA  = nswStampDuty(invPrice);
-    const invDeposit  = Math.max(0, cashSavings - stampDutyA);
-    const invMortgage = Math.max(0, invPrice - invDeposit);
-    const invMthly    = monthlyRepayment(invMortgage, invRate);
+    const stampDutyA    = nswStampDuty(invPrice);
+    const invDeposit    = Math.max(0, cashSavings - stampDutyA);
+    const invMortgage   = Math.max(0, invPrice - invDeposit);
+    const invMthly      = invIsIO
+      ? invMortgage * (invRate / 100) / 12       // interest-only: no principal repaid
+      : monthlyRepayment(invMortgage, invRate);  // P&I
+    const annualLandTaxA = nswLandTax(invLandValue);
 
     // Scenario B: sell flat → buy house — stamp duty + agent commission (~2%) reduce deposit
     const flatEquity    = flatValue - mortgageOwing;
@@ -304,6 +334,11 @@ export default function PropertyModel({ onSwitch }) {
     const dHouseMortgageD = Math.max(0, dHousePriceAtSale - dHouseDepositD);
     const dHouseMthlyD   = monthlyRepayment(dHouseMortgageD, houseRate);
 
+    // Derive each person's current gross from combined net (using the default Andrew:Stacey ratio)
+    const ANDREW_SHARE    = INCOME[0].monthly / (INCOME[0].monthly + INCOME[1].monthly);
+    const andrewBaseGross = grossFromNet(monthlyNetIncome * 12 * ANDREW_SHARE);
+    const staceyBaseGross = grossFromNet(monthlyNetIncome * 12 * (1 - ANDREW_SHARE));
+
     return Array.from({ length: YEARS + 1 }, (_, i) => {
       const year = CURRENT_YEAR + i;
 
@@ -313,9 +348,16 @@ export default function PropertyModel({ onSwitch }) {
       const incomeDelta  = events.reduce((sum, ev) =>  ev.isIncome && active(ev) ? sum + ev.monthlyDelta : sum, 0);
       const nonMortgageExp = Math.max(0, baseNonMortgage + expenseDelta) * Math.pow(1 + inf, i);
 
-      // Income after tax — salary + annual bonuses grow at incomeGrowth; income events are fixed
-      const baseMthlyIncome = monthlyNetIncome + (andrewAnnualBonus + staceyAnnualBonus) / 12;
-      const netMthlyIncome  = baseMthlyIncome * Math.pow(1 + incG, i) + incomeDelta;
+      // Income: grow each person's gross at incomeGrowth and re-apply tax each year.
+      // This naturally captures bracket creep — net grows slower than gross as income rises.
+      // Bonuses treated as gross; income events (lifecycle) are fixed post-tax monthly additions.
+      const growFactor     = Math.pow(1 + incG, i);
+      const andrewGross    = (andrewBaseGross + andrewAnnualBonus) * growFactor;
+      const staceyGross    = (staceyBaseGross + staceyAnnualBonus) * growFactor;
+      const netMthlyIncome = (
+        (andrewGross - calcTax(andrewGross)) +
+        (staceyGross - calcTax(staceyGross))
+      ) / 12 + incomeDelta;
 
       // Flat
       const flatV  = flatValue * Math.pow(1 + propG, i);
@@ -324,22 +366,36 @@ export default function PropertyModel({ onSwitch }) {
 
       // ── Scenario A ─────────────────────────────────────────────────────────
       const invV        = invPrice * Math.pow(1 + propG, i);
-      const invBal      = remainingBalance(invMortgage, invRate, i * 12);
+      const invBal      = invIsIO ? invMortgage : remainingBalance(invMortgage, invRate, i * 12);
       const grossRental = weeklyRent * 52 / 12 * Math.pow(1 + rentG, i);
-      const mgmtFee     = grossRental * 0.10; // 10% property management fee (tax-deductible)
-      const netRental   = grossRental - mgmtFee; // actual cash that arrives in your account
-      // Deductibles for tax: interest + maintenance (1% of value) + management fee
-      const invInterest    = invBal * (invRate / 100) / 12;
-      const invMaint       = invV * 0.01 / 12;
-      const taxableRental  = grossRental - invInterest - invMaint - mgmtFee;
-      // Negative = loss → tax offset at owner's marginal rate; Positive = profit → taxed at same rate
+      const mgmtFee     = grossRental * 0.10; // 10% property management fee (deductible)
+      const netRental   = grossRental - mgmtFee; // cash received after management fee
+      // Interest (IO keeps balance fixed so deduction stays high throughout term)
+      const invInterest = invBal * (invRate / 100) / 12;
+      const invMaint    = invV * 0.01 / 12; // repairs/maintenance (deductible & cash cost)
+      // All deductibles — depreciation is non-cash but reduces taxable income
+      const taxableRental = grossRental
+        - invInterest
+        - invMaint
+        - mgmtFee
+        - invDepreciation / 12          // Div 43 building + Div 40 plant & equipment (non-cash)
+        - invLandlordIns / 12           // landlord insurance
+        - invCouncilRates / 12          // council rates
+        - invStrata / 12                // body corporate (0 if house)
+        - annualLandTaxA / 12;          // NSW land tax (deductible for IP)
+      // Negative = loss → tax refund at MTR; Positive = profit → taxed at MTR
       const mtr = marginalTaxRate / 100;
       const rentalTaxEffect = taxableRental < 0
         ? Math.abs(taxableRental) * mtr    // refund (positive cash flow)
         : -taxableRental * mtr;            // tax liability (negative cash flow)
+      // Additional cash outflows beyond netRental (depreciation excluded — non-cash)
+      const invCashCosts = invMaint + (annualLandTaxA + invLandlordIns + invCouncilRates + invStrata) / 12;
 
-      const A_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly + netRental + rentalTaxEffect - invMthly;
+      const A_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly + netRental - invCashCosts + rentalTaxEffect - invMthly;
       const A_netWorth = flatEq + (invV - invBal);
+      // CGT if IP sold today: 50% discount (>12 months held), at MTR — not payable on PPOR
+      const A_cgtLiability     = Math.max(0, (invV - invPrice) * 0.5 * mtr);
+      const A_netWorthAfterCGT = A_netWorth - A_cgtLiability;
 
       // ── Scenario B ─────────────────────────────────────────────────────────
       const houseV   = housePrice * Math.pow(1 + propG, i);
@@ -376,7 +432,7 @@ export default function PropertyModel({ onSwitch }) {
         year,
         income:   Math.round(netMthlyIncome),
         expenses: Math.round(nonMortgageExp + flatMthly),
-        A: { cashFlow: Math.round(A_cashFlow), netWorth: Math.round(A_netWorth) },
+        A: { cashFlow: Math.round(A_cashFlow), netWorth: Math.round(A_netWorth), netWorthAfterCGT: Math.round(A_netWorthAfterCGT) },
         B: { cashFlow: Math.round(B_cashFlow), netWorth: Math.round(B_netWorth) },
         C: { cashFlow: Math.round(C_cashFlow), netWorth: Math.round(C_netWorth) },
         D: { cashFlow: Math.round(D_cashFlow), netWorth: Math.round(D_netWorth) },
@@ -388,6 +444,7 @@ export default function PropertyModel({ onSwitch }) {
     baseMonthlyLiving, baseMonthlyChildcare,
     inflationRate, incomeGrowth, propertyGrowth, rentGrowth,
     invPrice, invRate, weeklyRent, marginalTaxRate,
+    invDepreciation, invLandlordIns, invCouncilRates, invStrata, invLandValue, invIsIO,
     housePrice, houseRate,
     dSaleYear, renoCost, renoValueAdd,
     events,
@@ -437,6 +494,10 @@ export default function PropertyModel({ onSwitch }) {
   const stampDutyADisp   = nswStampDuty(invPrice);
   const invDepositDisp   = Math.max(0, cashSavings - stampDutyADisp);
   const invMortgageAmt   = Math.max(0, invPrice - invDepositDisp);
+  const invRepaymentDisp = invIsIO
+    ? invMortgageAmt * (invRate / 100) / 12
+    : monthlyRepayment(invMortgageAmt, invRate);
+  const invLandTaxDisp   = nswLandTax(invLandValue);
   const stampDutyBDisp   = nswStampDuty(housePrice);
   const sellingCostsDisp = flatValue * 0.02;
   const houseDepositDisp = Math.max(0, flatEquity + cashSavings - stampDutyBDisp - sellingCostsDisp);
@@ -504,8 +565,20 @@ export default function PropertyModel({ onSwitch }) {
               <Field label="Interest Rate %"                   value={currentRate}          onChange={setCurrentRate}  step={0.01} noPrefix />
               <Field label="Cash Savings"                      value={cashSavings}          onChange={setCashSavings} />
               <Field label="Monthly Net Income (take-home)"    value={monthlyNetIncome}     onChange={setMonthlyNetIncome} step={100} />
-              <Field label="Andrew Annual Bonus"               value={andrewAnnualBonus}    onChange={setAndrewAnnualBonus} step={1000} />
-              <Field label="Stacey Annual Bonus"               value={staceyAnnualBonus}    onChange={setStaceyAnnualBonus} step={1000} />
+              <div style={{ background: "#060d18", borderRadius: 5, padding: "5px 8px", fontSize: 10, color: PAL.muted, lineHeight: 1.7 }}>
+                {(() => {
+                  const share = INCOME[0].monthly / (INCOME[0].monthly + INCOME[1].monthly);
+                  const aGross = grossFromNet(monthlyNetIncome * 12 * share);
+                  const sGross = grossFromNet(monthlyNetIncome * 12 * (1 - share));
+                  return <>
+                    Implied gross (incl. Medicare):<br />
+                    Andrew: {fmt(aGross)}/yr · Stacey: {fmt(sGross)}/yr<br />
+                    <span style={{ color: PAL.green }}>Bracket creep modelled — net grows &lt; {incomeGrowth}% gross</span>
+                  </>;
+                })()}
+              </div>
+              <Field label="Andrew Annual Bonus (gross)"       value={andrewAnnualBonus}    onChange={setAndrewAnnualBonus} step={1000} />
+              <Field label="Stacey Annual Bonus (gross)"       value={staceyAnnualBonus}    onChange={setStaceyAnnualBonus} step={1000} />
               <Field label="Monthly Living (incl. mortgage)"   value={baseMonthlyLiving}    onChange={setBaseMonthlyLiving} step={100} />
               <Field label="Monthly Childcare"                 value={baseMonthlyChildcare} onChange={setBaseMonthlyChildcare} step={100} />
             </div>
@@ -516,18 +589,33 @@ export default function PropertyModel({ onSwitch }) {
             <div style={{ fontSize: 12, fontWeight: 700, color: PAL.blue, marginBottom: 2 }}>Scenario A</div>
             <div style={{ fontSize: 10, color: PAL.muted, marginBottom: 12 }}>Keep flat + buy investment property</div>
             <div style={{ display: "grid", gap: 9 }}>
-              <Field label="Investment Property Price"  value={invPrice}        onChange={setInvPrice} />
-              <Field label="Investment Rate %"          value={invRate}         onChange={setInvRate}  step={0.01} noPrefix />
-              <Field label="Weekly Rent"                value={weeklyRent}      onChange={setWeeklyRent} step={50} />
-              <Field label="Owner's Marginal Tax Rate %" value={marginalTaxRate} onChange={setMarginalTaxRate} step={1} noPrefix />
+              <Field label="Investment Property Price"    value={invPrice}          onChange={setInvPrice} />
+              <Field label="Investment Rate %"            value={invRate}           onChange={setInvRate}  step={0.01} noPrefix />
+              <Field label="Weekly Rent"                  value={weeklyRent}        onChange={setWeeklyRent} step={50} />
+              <Field label="Owner's Marginal Tax Rate %"  value={marginalTaxRate}   onChange={setMarginalTaxRate} step={1} noPrefix />
+              <Field label="Depreciation Annual (Div43+40)" value={invDepreciation} onChange={setInvDepreciation} step={1000} />
+              <Field label="Landlord Insurance Annual"    value={invLandlordIns}    onChange={setInvLandlordIns} step={100} />
+              <Field label="Council Rates Annual"         value={invCouncilRates}   onChange={setInvCouncilRates} step={100} />
+              <Field label="Strata Annual (0 if house)"   value={invStrata}         onChange={setInvStrata} step={500} />
+              <Field label="Land Value (for land tax)"    value={invLandValue}      onChange={setInvLandValue} />
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
+                <label style={{ ...LBL, marginBottom: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                  <input type="checkbox" checked={invIsIO} onChange={e => setInvIsIO(e.target.checked)}
+                    style={{ accentColor: PAL.blue }} />
+                  Interest-only loan (IO)
+                </label>
+              </div>
               <div style={{ background: "#060d18", borderRadius: 6, padding: "8px 10px", fontSize: 10, color: PAL.muted, lineHeight: 1.8 }}>
                 Savings: {fmt(cashSavings)}<br />
                 <span style={{ color: PAL.red }}>− Stamp duty: {fmt(stampDutyADisp)}</span><br />
-                Deposit: {fmt(invDepositDisp)}<br />
-                Mortgage: {fmt(invMortgageAmt)}<br />
-                Monthly repayment: {fmt(monthlyRepayment(invMortgageAmt, invRate))}<br />
-                Gross rental: {fmt(weeklyRent * 52 / 12)} · Net (−10% mgmt): {fmt(weeklyRent * 52 / 12 * 0.9)}<br />
-                <span style={{ color: PAL.blue }}>Neg. gearing @ {marginalTaxRate}% · Profit taxed @ {marginalTaxRate}%</span>
+                Deposit: {fmt(invDepositDisp)} · Mortgage: {fmt(invMortgageAmt)}<br />
+                Monthly repayment ({invIsIO ? "IO" : "P&I"}): {fmt(invRepaymentDisp)}<br />
+                Gross rent: {fmt(weeklyRent * 52 / 12)} · Net (−10%): {fmt(weeklyRent * 52 / 12 * 0.9)}<br />
+                {invLandTaxDisp > 0
+                  ? <span style={{ color: PAL.red }}>Land tax: {fmt(invLandTaxDisp)}/yr (land val {fmt(invLandValue)})</span>
+                  : <span>Land tax: $0 (land val {fmt(invLandValue)} &lt; threshold)</span>
+                }<br />
+                <span style={{ color: PAL.blue }}>Neg. gearing @ {marginalTaxRate}% · Depreciation: {fmt(invDepreciation)}/yr non-cash</span>
               </div>
             </div>
           </div>
@@ -688,6 +776,11 @@ export default function PropertyModel({ onSwitch }) {
                         {fmtK(d[k].cashFlow)}<span style={{ fontSize: 9 }}>/mo</span>
                       </div>
                       <div style={{ fontSize: 10, color: PAL.muted, marginTop: 2 }}>{fmtM(d[k].netWorth)}</div>
+                      {k === "A" && yr > 0 && (
+                        <div style={{ fontSize: 9, color: PAL.red, marginTop: 1 }} title="After embedded CGT on IP sale">
+                          {fmtM(d[k].netWorthAfterCGT)} −CGT
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -721,7 +814,7 @@ export default function PropertyModel({ onSwitch }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${PAL.border}` }}>
-                  {["Year", "Net income/mo", "Expenses/mo", "CF: A", "CF: B", "CF: C", "CF: D", "Worth: A", "Worth: B", "Worth: C", "Worth: D"].map(h => (
+                  {["Year", "Net income/mo", "Expenses/mo", "CF: A", "CF: B", "CF: C", "CF: D", "Worth: A", "A (−CGT)", "Worth: B", "Worth: C", "Worth: D"].map(h => (
                     <th key={h} style={{ textAlign: "right", padding: "6px 8px", color: PAL.muted, fontWeight: 400, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -741,7 +834,9 @@ export default function PropertyModel({ onSwitch }) {
                           {fmt(d[k].cashFlow)}
                         </td>
                       ))}
-                      {["A", "B", "C", "D"].map(k => (
+                      <td style={{ textAlign: "right", padding: "5px 8px", color: PAL.muted }}>{fmtM(d.A.netWorth)}</td>
+                      <td style={{ textAlign: "right", padding: "5px 8px", color: PAL.red }}>{fmtM(d.A.netWorthAfterCGT)}</td>
+                      {["B", "C", "D"].map(k => (
                         <td key={k} style={{ textAlign: "right", padding: "5px 8px", color: PAL.muted }}>
                           {fmtM(d[k].netWorth)}
                         </td>
