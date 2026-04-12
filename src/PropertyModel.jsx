@@ -98,6 +98,83 @@ function remainingBalanceWithOffset(principal, annualRatePct, offsetBalance, ter
   return bal;
 }
 
+// ─── Rate-path interpolation ──────────────────────────────────────────────────
+// i = years from now. Linearly: 0→start, 3→rateYr3, 10→rateYr10, 10+→rateYr10
+function rateAtYear(i, startRate, rateYr3, rateYr10) {
+  if (i <= 3)  return startRate + (rateYr3  - startRate) * (i / 3);
+  if (i <= 10) return rateYr3   + (rateYr10 - rateYr3)  * ((i - 3) / 7);
+  return rateYr10;
+}
+
+// ─── Variable-rate P&I mortgage simulation ────────────────────────────────────
+// Returns { bals[0..years], pmts[0..years] }
+// bals[i] = balance at start of year i; pmts[i] = monthly repayment during year i
+function simulateMortgage(principal, ratePathFn, origTermMonths, years) {
+  const bals = [Math.max(0, principal)];
+  const pmts  = [];
+  let bal = Math.max(0, principal);
+  for (let i = 0; i < years; i++) {
+    const rate      = ratePathFn(i);
+    const remaining = Math.max(1, origTermMonths - i * 12);
+    const pmt       = monthlyRepayment(bal, rate, remaining);
+    pmts.push(pmt);
+    for (let m = 0; m < 12 && bal > 0; m++) {
+      const interest = bal * (rate / 100 / 12);
+      bal = Math.max(0, bal - (pmt - interest));
+    }
+    bals.push(bal);
+  }
+  pmts.push(pmts[pmts.length - 1] || 0);
+  return { bals, pmts };
+}
+
+// ─── IO then P&I mortgage simulation ─────────────────────────────────────────
+// isIO: if true, IO until ioExpiryYear then P&I for piTermMonths
+function simulateIOMortgage(principal, ratePathFn, isIO, ioExpiryYear, piTermMonths, curYear, years) {
+  const bals = [Math.max(0, principal)];
+  const pmts  = [];
+  let bal = Math.max(0, principal);
+  for (let i = 0; i < years; i++) {
+    const year = curYear + i;
+    const rate = ratePathFn(i);
+    if (isIO && year < ioExpiryYear) {
+      // IO period — interest only, balance unchanged
+      pmts.push(bal * (rate / 100 / 12));
+    } else {
+      // P&I — remaining term counts from IO expiry (or from start if never IO)
+      const monthsIntoPi   = isIO ? Math.max(0, (year - ioExpiryYear) * 12) : i * 12;
+      const remaining      = Math.max(1, piTermMonths - monthsIntoPi);
+      const pmt            = monthlyRepayment(bal, rate, remaining);
+      pmts.push(pmt);
+      for (let m = 0; m < 12 && bal > 0; m++) {
+        const interest = bal * (rate / 100 / 12);
+        bal = Math.max(0, bal - (pmt - interest));
+      }
+    }
+    bals.push(bal);
+  }
+  pmts.push(pmts[pmts.length - 1] || 0);
+  return { bals, pmts };
+}
+
+// ─── Variable-rate offset mortgage simulation ─────────────────────────────────
+// Same repayment as standard P&I but interest charged on (balance − offset) only
+function simulateMortgageWithOffset(principal, ratePathFn, offsetBalance, origTermMonths, years) {
+  const bals = [Math.max(0, principal)];
+  let bal = Math.max(0, principal);
+  for (let i = 0; i < years; i++) {
+    const rate      = ratePathFn(i);
+    const remaining = Math.max(1, origTermMonths - i * 12);
+    const pmt       = monthlyRepayment(bal, rate, remaining);
+    for (let m = 0; m < 12 && bal > 0; m++) {
+      const interest = Math.max(0, bal - offsetBalance) * (rate / 100 / 12);
+      bal = Math.max(0, bal - (pmt - interest));
+    }
+    bals.push(bal);
+  }
+  return { bals };
+}
+
 // ─── Scenario palette ─────────────────────────────────────────────────────────
 const SCEN = {
   A: { color: "#3d8ef0", label: "A: Keep flat + Invest"    },
@@ -199,6 +276,14 @@ export default function PropertyModel({ onSwitch }) {
   const [invStrata,            setInvStrata]            = useState(0);      // strata annual (0 if house)
   const [invLandValue,         setInvLandValue]         = useState(400000); // unimproved land value for land tax
   const [invIsIO,              setInvIsIO]              = useState(false);  // interest-only loan toggle
+  const [ioExpiryYear,         setIoExpiryYear]         = useState(CURRENT_YEAR + 5); // year IO period ends
+  const [negGearingOn,         setNegGearingOn]         = useState(true);  // negative gearing available
+  const [vacancyWeeks,         setVacancyWeeks]         = useState(3);     // weeks vacant per year
+
+  // Rate path — two RBA hikes expected in 2026; long-run normalisation by year 10
+  const [rateYear3,            setRateYear3]            = useState(6.5);   // peak rate ~yr3
+  const [rateYear10,           setRateYear10]           = useState(5.75);  // long-run normalised rate
+  const [servicingBuffer,      setServicingBuffer]      = useState(3.0);   // APRA buffer banks add for stress test
 
   // Scenario B — sell flat + buy Collaroy Plateau house
   const [housePrice, setHousePrice] = useState(2600000); // median Sep25-Mar26
@@ -298,43 +383,55 @@ export default function PropertyModel({ onSwitch }) {
     const propG = propertyGrowth / 100;
     const rentG = rentGrowth     / 100;
 
-    // Fixed nominal mortgage payments (don't inflate)
-    const flatMthly = monthlyRepayment(mortgageOwing, currentRate);
+    // ── Rate path functions (PPOR delta applied to all loans) ─────────────────
+    const ratePath      = i => rateAtYear(i, currentRate, rateYear3, rateYear10);
+    const rateDeltaAt   = i => ratePath(i) - currentRate;
+    const invRatePath   = i => invRate   + rateDeltaAt(i);
+    const houseRatePath = i => houseRate + rateDeltaAt(i);
 
-    // Non-mortgage base — this part inflates
-    const baseNonMortgage = Math.max(0, baseMonthlyLiving - flatMthly) + baseMonthlyChildcare;
+    // ── Non-mortgage base — this part inflates ────────────────────────────────
+    // Strip out the current mortgage payment to isolate the non-mortgage portion
+    const initialFlatPmt  = monthlyRepayment(mortgageOwing, currentRate);
+    const baseNonMortgage = Math.max(0, baseMonthlyLiving - initialFlatPmt) + baseMonthlyChildcare;
 
-    // Scenario A: investment property — stamp duty comes out of savings first
-    const stampDutyA    = nswStampDuty(invPrice);
-    const invDeposit    = Math.max(0, cashSavings - stampDutyA);
-    const invMortgage   = Math.max(0, invPrice - invDeposit);
-    const invMthly      = invIsIO
-      ? invMortgage * (invRate / 100) / 12       // interest-only: no principal repaid
-      : monthlyRepayment(invMortgage, invRate);  // P&I
+    // ── Scenario A: investment property ──────────────────────────────────────
+    const stampDutyA     = nswStampDuty(invPrice);
+    const invDeposit     = Math.max(0, cashSavings - stampDutyA);
+    const invMortgageAmt = Math.max(0, invPrice - invDeposit);
     const annualLandTaxA = nswLandTax(invLandValue);
+    const invMtg         = simulateIOMortgage(
+      invMortgageAmt, invRatePath, invIsIO, ioExpiryYear, 300, CURRENT_YEAR, YEARS
+    );
 
-    // Scenario B: sell flat → buy house — stamp duty + agent commission (~2%) reduce deposit
+    // ── Scenario B: sell flat → buy house ─────────────────────────────────────
+    const flatMtg       = simulateMortgage(mortgageOwing, ratePath, 300, YEARS);
     const flatEquity    = flatValue - mortgageOwing;
     const stampDutyB    = nswStampDuty(housePrice);
-    const sellingCosts  = flatValue * 0.02; // ~2% agent commission
+    const sellingCosts  = flatValue * 0.02;
     const houseDeposit  = Math.max(0, flatEquity + cashSavings - stampDutyB - sellingCosts);
     const houseMortgage = Math.max(0, housePrice - houseDeposit);
-    const houseMthly    = monthlyRepayment(houseMortgage, houseRate);
+    const houseMtg      = simulateMortgage(houseMortgage, houseRatePath, 300, YEARS);
 
-    // Scenario D: reno flat, sell in dSaleYear, buy house at market price that year
-    const dIdx           = Math.max(1, dSaleYear - CURRENT_YEAR); // years until sale (min 1)
-    const dRenoFlatValue = flatValue + renoValueAdd;              // reno-uplifted flat value base
-    const dFlatSaleV     = dRenoFlatValue * Math.pow(1 + propG, dIdx);
-    const dFlatBalAtSale = remainingBalance(mortgageOwing, currentRate, dIdx * 12);
-    const dSellingCostsD = dFlatSaleV * 0.02;
+    // ── Scenario C: reno flat, sell in dSaleYear ──────────────────────────────
+    const dIdx              = Math.max(1, dSaleYear - CURRENT_YEAR);
+    const dRenoFlatValue    = flatValue + renoValueAdd;
+    const dFlatSaleV        = dRenoFlatValue * Math.pow(1 + propG, dIdx);
+    const dFlatBalAtSale    = flatMtg.bals[dIdx];   // variable-rate balance at sale
+    const dSellingCostsD    = dFlatSaleV * 0.02;
     const dHousePriceAtSale = housePrice * Math.pow(1 + propG, dIdx);
-    const dStampDutyD    = nswStampDuty(dHousePriceAtSale);
-    const dCashAtSale    = cashSavings - renoCost;
-    const dHouseDepositD = Math.max(0, (dFlatSaleV - dFlatBalAtSale) + dCashAtSale - dStampDutyD - dSellingCostsD);
-    const dHouseMortgageD = Math.max(0, dHousePriceAtSale - dHouseDepositD);
-    const dHouseMthlyD   = monthlyRepayment(dHouseMortgageD, houseRate);
+    const dStampDutyD       = nswStampDuty(dHousePriceAtSale);
+    const dCashAtSale       = cashSavings - renoCost;
+    const dHouseDepositD    = Math.max(0, (dFlatSaleV - dFlatBalAtSale) + dCashAtSale - dStampDutyD - dSellingCostsD);
+    const dHouseMortgageD   = Math.max(0, dHousePriceAtSale - dHouseDepositD);
+    // Post-sale house: rate path offset by dIdx years so it follows the same glide
+    const dHouseMtg         = simulateMortgage(
+      dHouseMortgageD, j => houseRatePath(dIdx + j), 300, Math.max(1, YEARS - dIdx)
+    );
 
-    // Derive each person's current gross from combined net (using the default Andrew:Stacey ratio)
+    // ── Scenario D: offset ─────────────────────────────────────────────────────
+    const offsetMtg = simulateMortgageWithOffset(mortgageOwing, ratePath, cashSavings, 300, YEARS);
+
+    // ── Income base ───────────────────────────────────────────────────────────
     const ANDREW_SHARE    = INCOME[0].monthly / (INCOME[0].monthly + INCOME[1].monthly);
     const andrewBaseGross = grossFromNet(monthlyNetIncome * 12 * ANDREW_SHARE);
     const staceyBaseGross = grossFromNet(monthlyNetIncome * 12 * (1 - ANDREW_SHARE));
@@ -342,15 +439,13 @@ export default function PropertyModel({ onSwitch }) {
     return Array.from({ length: YEARS + 1 }, (_, i) => {
       const year = CURRENT_YEAR + i;
 
-      // Lifecycle: split expense events (inflated) from income events (fixed, not inflated)
-      const active = ev => year >= ev.year && (ev.endYear == null || year < ev.endYear);
+      // Lifecycle: expense events inflate; income events are fixed post-tax
+      const active       = ev => year >= ev.year && (ev.endYear == null || year < ev.endYear);
       const expenseDelta = events.reduce((sum, ev) => !ev.isIncome && active(ev) ? sum + ev.monthlyDelta : sum, 0);
       const incomeDelta  = events.reduce((sum, ev) =>  ev.isIncome && active(ev) ? sum + ev.monthlyDelta : sum, 0);
       const nonMortgageExp = Math.max(0, baseNonMortgage + expenseDelta) * Math.pow(1 + inf, i);
 
-      // Income: grow each person's gross at incomeGrowth and re-apply tax each year.
-      // This naturally captures bracket creep — net grows slower than gross as income rises.
-      // Bonuses treated as gross; income events (lifecycle) are fixed post-tax monthly additions.
+      // Income — bracket creep: re-apply tax each year as gross grows
       const growFactor     = Math.pow(1 + incG, i);
       const andrewGross    = (andrewBaseGross + andrewAnnualBonus) * growFactor;
       const staceyGross    = (staceyBaseGross + staceyAnnualBonus) * growFactor;
@@ -359,79 +454,74 @@ export default function PropertyModel({ onSwitch }) {
         (staceyGross - calcTax(staceyGross))
       ) / 12 + incomeDelta;
 
-      // Flat
-      const flatV  = flatValue * Math.pow(1 + propG, i);
-      const flatBal = remainingBalance(mortgageOwing, currentRate, i * 12);
+      // Flat (variable-rate balance & repayment from simulation)
+      const flatV   = flatValue * Math.pow(1 + propG, i);
+      const flatBal = flatMtg.bals[i];
+      const flatPmt = flatMtg.pmts[i];
       const flatEq  = flatV - flatBal;
 
       // ── Scenario A ─────────────────────────────────────────────────────────
       const invV        = invPrice * Math.pow(1 + propG, i);
-      const invBal      = invIsIO ? invMortgage : remainingBalance(invMortgage, invRate, i * 12);
-      const grossRental = weeklyRent * 52 / 12 * Math.pow(1 + rentG, i);
-      const mgmtFee     = grossRental * 0.10; // 10% property management fee (deductible)
-      const netRental   = grossRental - mgmtFee; // cash received after management fee
-      // Interest (IO keeps balance fixed so deduction stays high throughout term)
-      const invInterest = invBal * (invRate / 100) / 12;
-      const invMaint    = invV * 0.01 / 12; // repairs/maintenance (deductible & cash cost)
-      // All deductibles — depreciation is non-cash but reduces taxable income
+      const invBal      = invMtg.bals[i];
+      const invPmt      = invMtg.pmts[i];
+      // Vacancy-adjusted gross rental (52 weeks less vacancy weeks)
+      const grossRental = weeklyRent * (52 - vacancyWeeks) / 12 * Math.pow(1 + rentG, i);
+      const mgmtFee     = grossRental * 0.10;
+      const netRental   = grossRental - mgmtFee;
+      const invInterest = invBal * (invRatePath(i) / 100) / 12;
+      const invMaint    = invV * 0.01 / 12;
       const taxableRental = grossRental
-        - invInterest
-        - invMaint
-        - mgmtFee
-        - invDepreciation / 12          // Div 43 building + Div 40 plant & equipment (non-cash)
-        - invLandlordIns / 12           // landlord insurance
-        - invCouncilRates / 12          // council rates
-        - invStrata / 12                // body corporate (0 if house)
-        - annualLandTaxA / 12;          // NSW land tax (deductible for IP)
-      // Negative = loss → tax refund at MTR; Positive = profit → taxed at MTR
+        - invInterest - invMaint - mgmtFee
+        - invDepreciation / 12
+        - invLandlordIns / 12
+        - invCouncilRates / 12
+        - invStrata / 12
+        - annualLandTaxA / 12;
       const mtr = marginalTaxRate / 100;
-      const rentalTaxEffect = taxableRental < 0
-        ? Math.abs(taxableRental) * mtr    // refund (positive cash flow)
-        : -taxableRental * mtr;            // tax liability (negative cash flow)
-      // Additional cash outflows beyond netRental (depreciation excluded — non-cash)
+      const rawTaxEffect = taxableRental < 0
+        ? Math.abs(taxableRental) * mtr    // loss → refund
+        : -taxableRental * mtr;            // profit → tax
+      // Negative gearing toggle: no refund if abolished, still taxed on profit
+      const rentalTaxEffect = (!negGearingOn && taxableRental < 0) ? 0 : rawTaxEffect;
       const invCashCosts = invMaint + (annualLandTaxA + invLandlordIns + invCouncilRates + invStrata) / 12;
 
-      const A_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly + netRental - invCashCosts + rentalTaxEffect - invMthly;
-      const A_netWorth = flatEq + (invV - invBal);
-      // CGT if IP sold today: 50% discount (>12 months held), at MTR — not payable on PPOR
+      const A_cashFlow         = netMthlyIncome - nonMortgageExp - flatPmt + netRental - invCashCosts + rentalTaxEffect - invPmt;
+      const A_netWorth         = flatEq + (invV - invBal);
       const A_cgtLiability     = Math.max(0, (invV - invPrice) * 0.5 * mtr);
       const A_netWorthAfterCGT = A_netWorth - A_cgtLiability;
 
       // ── Scenario B ─────────────────────────────────────────────────────────
       const houseV   = housePrice * Math.pow(1 + propG, i);
-      const houseBal = remainingBalance(houseMortgage, houseRate, i * 12);
-
-      const B_cashFlow = netMthlyIncome - nonMortgageExp - houseMthly;
+      const houseBal = houseMtg.bals[i];
+      const housePmt = houseMtg.pmts[i];
+      const B_cashFlow = netMthlyIncome - nonMortgageExp - housePmt;
       const B_netWorth = houseV - houseBal;
 
-      // ── Scenario C (Reno + Sell) ────────────────────────────────────────────
+      // ── Scenario C ─────────────────────────────────────────────────────────
       let C_cashFlow, C_netWorth;
       if (i < dIdx) {
-        // Pre-sale: reno'd flat, savings reduced by reno cost
         const cFlatV_i   = dRenoFlatValue * Math.pow(1 + propG, i);
-        const cFlatBal_i = remainingBalance(mortgageOwing, currentRate, i * 12);
-        C_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly;
+        const cFlatBal_i = flatMtg.bals[i];
+        C_cashFlow = netMthlyIncome - nonMortgageExp - flatPmt;
         C_netWorth = (cFlatV_i - cFlatBal_i) + (cashSavings - renoCost);
       } else {
-        // Post-sale: in new house, mortgage from sale year
-        const yrs      = i - dIdx;
-        const cHouseV  = dHousePriceAtSale * Math.pow(1 + propG, yrs);
-        const cHouseBal = remainingBalance(dHouseMortgageD, houseRate, yrs * 12);
-        C_cashFlow = netMthlyIncome - nonMortgageExp - dHouseMthlyD;
+        const yrs       = i - dIdx;
+        const cHouseV   = dHousePriceAtSale * Math.pow(1 + propG, yrs);
+        const cHouseBal = yrs < dHouseMtg.bals.length ? dHouseMtg.bals[yrs] : 0;
+        const cHousePmt = yrs < dHouseMtg.pmts.length ? dHouseMtg.pmts[yrs] : 0;
+        C_cashFlow = netMthlyIncome - nonMortgageExp - cHousePmt;
         C_netWorth = cHouseV - cHouseBal;
       }
 
-      // ── Scenario D (Offset) ─────────────────────────────────────────────────
-      // Repayment is the same as status quo; interest charged only on (balance − offset).
-      // Benefit is purely faster equity growth — cash remains accessible in offset.
-      const offsetBal  = remainingBalanceWithOffset(mortgageOwing, currentRate, cashSavings, 300, i * 12);
-      const D_cashFlow = netMthlyIncome - nonMortgageExp - flatMthly;
-      const D_netWorth = flatV - offsetBal + cashSavings;
+      // ── Scenario D ─────────────────────────────────────────────────────────
+      // Same repayment as flat; benefit is faster equity via offset interest saving
+      const D_cashFlow = netMthlyIncome - nonMortgageExp - flatPmt;
+      const D_netWorth = flatV - offsetMtg.bals[i] + cashSavings;
 
       return {
         year,
         income:   Math.round(netMthlyIncome),
-        expenses: Math.round(nonMortgageExp + flatMthly),
+        expenses: Math.round(nonMortgageExp + flatPmt),
         A: { cashFlow: Math.round(A_cashFlow), netWorth: Math.round(A_netWorth), netWorthAfterCGT: Math.round(A_netWorthAfterCGT) },
         B: { cashFlow: Math.round(B_cashFlow), netWorth: Math.round(B_netWorth) },
         C: { cashFlow: Math.round(C_cashFlow), netWorth: Math.round(C_netWorth) },
@@ -439,12 +529,13 @@ export default function PropertyModel({ onSwitch }) {
       };
     });
   }, [
-    mortgageOwing, currentRate, flatValue, cashSavings,
+    mortgageOwing, currentRate, rateYear3, rateYear10, flatValue, cashSavings,
     monthlyNetIncome, andrewAnnualBonus, staceyAnnualBonus,
     baseMonthlyLiving, baseMonthlyChildcare,
     inflationRate, incomeGrowth, propertyGrowth, rentGrowth,
-    invPrice, invRate, weeklyRent, marginalTaxRate,
-    invDepreciation, invLandlordIns, invCouncilRates, invStrata, invLandValue, invIsIO,
+    invPrice, invRate, weeklyRent, marginalTaxRate, vacancyWeeks,
+    invDepreciation, invLandlordIns, invCouncilRates, invStrata, invLandValue,
+    invIsIO, ioExpiryYear, negGearingOn,
     housePrice, houseRate,
     dSaleYear, renoCost, renoValueAdd,
     events,
@@ -598,6 +689,7 @@ export default function PropertyModel({ onSwitch }) {
               <Field label="Council Rates Annual"         value={invCouncilRates}   onChange={setInvCouncilRates} step={100} />
               <Field label="Strata Annual (0 if house)"   value={invStrata}         onChange={setInvStrata} step={500} />
               <Field label="Land Value (for land tax)"    value={invLandValue}      onChange={setInvLandValue} />
+              <Field label="Vacancy (weeks/yr)"           value={vacancyWeeks}       onChange={setVacancyWeeks} step={1} noPrefix />
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
                 <label style={{ ...LBL, marginBottom: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
                   <input type="checkbox" checked={invIsIO} onChange={e => setInvIsIO(e.target.checked)}
@@ -605,17 +697,44 @@ export default function PropertyModel({ onSwitch }) {
                   Interest-only loan (IO)
                 </label>
               </div>
+              {invIsIO && (
+                <div>
+                  <span style={LBL}>IO expires (year)</span>
+                  <input type="text" inputMode="numeric" value={ioExpiryYear} style={INP}
+                    onChange={e => { const n = parseInt(e.target.value); if (!isNaN(n)) setIoExpiryYear(n); }} />
+                  <span style={{ fontSize: 9, color: PAL.amber, marginTop: 2, display: "block" }}>
+                    ⚠ Payment steps up to P&I in {ioExpiryYear}
+                  </span>
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label style={{ ...LBL, marginBottom: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                  <input type="checkbox" checked={negGearingOn} onChange={e => setNegGearingOn(e.target.checked)}
+                    style={{ accentColor: PAL.blue }} />
+                  Negative gearing available
+                </label>
+              </div>
+              {!negGearingOn && (
+                <span style={{ fontSize: 9, color: PAL.amber, display: "block" }}>
+                  ⚠ Tax refund on losses removed — stress-testing Budget risk
+                </span>
+              )}
               <div style={{ background: "#060d18", borderRadius: 6, padding: "8px 10px", fontSize: 10, color: PAL.muted, lineHeight: 1.8 }}>
                 Savings: {fmt(cashSavings)}<br />
                 <span style={{ color: PAL.red }}>− Stamp duty: {fmt(stampDutyADisp)}</span><br />
                 Deposit: {fmt(invDepositDisp)} · Mortgage: {fmt(invMortgageAmt)}<br />
                 Monthly repayment ({invIsIO ? "IO" : "P&I"}): {fmt(invRepaymentDisp)}<br />
-                Gross rent: {fmt(weeklyRent * 52 / 12)} · Net (−10%): {fmt(weeklyRent * 52 / 12 * 0.9)}<br />
+                Gross rent ({52 - vacancyWeeks}wk): {fmt(weeklyRent * (52 - vacancyWeeks) / 12)} · Net (−10%): {fmt(weeklyRent * (52 - vacancyWeeks) / 12 * 0.9)}<br />
                 {invLandTaxDisp > 0
                   ? <span style={{ color: PAL.red }}>Land tax: {fmt(invLandTaxDisp)}/yr (land val {fmt(invLandValue)})</span>
                   : <span>Land tax: $0 (land val {fmt(invLandValue)} &lt; threshold)</span>
                 }<br />
-                <span style={{ color: PAL.blue }}>Neg. gearing @ {marginalTaxRate}% · Depreciation: {fmt(invDepreciation)}/yr non-cash</span>
+                <span style={{ color: negGearingOn ? PAL.blue : PAL.muted }}>
+                  {negGearingOn ? `Neg. gearing @ ${marginalTaxRate}%` : "Neg. gearing OFF"} · Depreciation: {fmt(invDepreciation)}/yr non-cash
+                </span><br />
+                <span style={{ color: PAL.amber }}>
+                  Bank stress test: {(invRate + servicingBuffer).toFixed(2)}% → {fmt(monthlyRepayment(invMortgageAmt, invRate + servicingBuffer))}/mo
+                </span>
               </div>
             </div>
           </div>
@@ -671,6 +790,20 @@ export default function PropertyModel({ onSwitch }) {
                 <Field label="Income Growth %"    value={incomeGrowth}   onChange={setIncomeGrowth}   step={0.5} noPrefix />
                 <Field label="Property Growth %"  value={propertyGrowth} onChange={setPropertyGrowth} step={0.1} noPrefix />
                 <Field label="Rent Growth %"      value={rentGrowth}     onChange={setRentGrowth}     step={0.5} noPrefix />
+                <div style={{ borderTop: `1px solid ${PAL.border}`, paddingTop: 8, marginTop: 2 }}>
+                  <div style={{ fontSize: 9, color: PAL.amber, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+                    Rate Path (2× RBA hikes expected)
+                  </div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <Field label="PPOR Rate yr 3 %"  value={rateYear3}  onChange={setRateYear3}  step={0.25} noPrefix />
+                    <Field label="PPOR Rate yr 10 %" value={rateYear10} onChange={setRateYear10} step={0.25} noPrefix />
+                    <Field label="Bank buffer % (APRA serviceability)" value={servicingBuffer} onChange={setServicingBuffer} step={0.5} noPrefix />
+                  </div>
+                  <div style={{ fontSize: 9, color: PAL.muted, marginTop: 6, lineHeight: 1.7 }}>
+                    All loan rates shift by the same delta as PPOR.<br />
+                    IP + house rates maintain their spread over base.
+                  </div>
+                </div>
               </div>
             </div>
           </div>
