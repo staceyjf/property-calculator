@@ -814,8 +814,8 @@ export default function PropertyModel({ onSwitch }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${PAL.border}` }}>
-                  {["Year", "Net income/mo", "Expenses/mo", "CF: A", "CF: B", "CF: C", "CF: D", "Worth: A", "A (−CGT)", "Worth: B", "Worth: C", "Worth: D"].map(h => (
-                    <th key={h} style={{ textAlign: "right", padding: "6px 8px", color: PAL.muted, fontWeight: 400, whiteSpace: "nowrap" }}>{h}</th>
+                  {["Year", "Net income/mo", "Expenses/mo", "CF: A", "CF: B", "CF: C", "CF: D", "Worth: A (gross)", "A after CGT ①", "Worth: B", "Worth: C", "Worth: D"].map(h => (
+                    <th key={h} style={{ textAlign: "right", padding: "6px 8px", color: h === "A after CGT ①" ? PAL.red : PAL.muted, fontWeight: 400, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -846,6 +846,10 @@ export default function PropertyModel({ onSwitch }) {
                 })}
               </tbody>
             </table>
+          </div>
+          <div style={{ marginTop: 10, fontSize: 10, color: PAL.muted, lineHeight: 1.7 }}>
+            <span style={{ color: PAL.red }}>① A after CGT</span> — Scenario A net worth less the CGT that would be payable if the investment property were sold in that year.
+            Calculated as: gain × 50% discount × {marginalTaxRate}% MTR. B/C/D are PPOR scenarios — no CGT on sale. This column makes all four scenarios directly comparable.
           </div>
         </div>
 
