@@ -612,16 +612,13 @@ export default function BudgetTrackerComponent() {
           <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <button style={{ background:"#0c1a2a", color:C.blue, border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={() => { setTxs([]); setStep("upload"); }}>← Upload</button>
             <button style={{ background:"#0c1a2a", color:C.muted, border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={() => setShowSheet(s => !s)}>Preview</button>
-            {!googleToken
-              ? <button style={{ background:"#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={signInGoogle}>Connect Google →</button>
-              : <button
-                  disabled={sheetStatus === "writing"}
-                  style={{ background: sheetStatus?.done ? "#1a5a3a" : "#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
-                  onClick={() => { setSheetStatus(null); writeToSheet(); }}
-                >
-                  {sheetStatus === "writing" ? "Writing…" : sheetStatus?.done ? sheetStatus.msg : `Write ${rangeLabel} →`}
-                </button>
-            }
+            <button
+              disabled={sheetStatus === "writing"}
+              style={{ background: sheetStatus?.done ? "#1a5a3a" : "#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+              onClick={() => { setSheetStatus(null); writeToSheet(); }}
+            >
+              {sheetStatus === "writing" ? "Writing…" : sheetStatus?.done ? sheetStatus.msg : googleToken ? `Write ${rangeLabel} →` : `Connect & Write →`}
+            </button>
             {sheetStatus?.error && <span style={{ fontSize:11, color:C.red }}>{sheetStatus.error}</span>}
           </div>
         </div>
@@ -681,13 +678,21 @@ export default function BudgetTrackerComponent() {
             const pct = budget > 0 ? Math.min(actual/budget*100, 100) : 0;
             return (
               <div key={label} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px" }}>
-                <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:4 }}>{label}</div>
-                <div style={{ fontSize:22, fontWeight:800, color, marginBottom:2 }}>{fmt(actual)}</div>
-                <div style={{ fontSize:11, color:C.muted }}>Budget: {fmt(budget)}</div>
-                {budget>0 && <div style={{ fontSize:11, fontWeight:600, color: over?C.red:color, marginTop:2 }}>
+                <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>{label}</div>
+                <div style={{ display:"flex", gap:12, marginBottom:6 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Budget</div>
+                    <div style={{ fontSize:18, fontWeight:700, color:C.muted }}>{fmt(budget)}</div>
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Actual</div>
+                    <div style={{ fontSize:18, fontWeight:800, color: over ? C.red : color }}>{fmt(actual)}</div>
+                  </div>
+                </div>
+                {budget>0 && <div style={{ fontSize:11, fontWeight:600, color: over ? C.red : color, marginBottom:6 }}>
                   {over ? `↑ ${fmt(diff)} over` : `↓ ${fmt(Math.abs(diff))} under`}
                 </div>}
-                <div style={{ marginTop:8, background:"#08121e", borderRadius:3, height:3 }}>
+                <div style={{ background:"#08121e", borderRadius:3, height:3 }}>
                   <div style={{ width:`${pct}%`, height:"100%", background: over?C.red:color, borderRadius:3, transition:"width 0.4s" }} />
                 </div>
               </div>
@@ -695,16 +700,21 @@ export default function BudgetTrackerComponent() {
           })}
           {/* Savings forecast card */}
           <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px" }}>
-            <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:4 }}>Forecasted Savings</div>
-            <div style={{ fontSize:22, fontWeight:800, color: forecasted >= 0 ? C.green : C.red, marginBottom:2 }}>{fmt(Math.abs(forecasted))}</div>
-            <div style={{ fontSize:11, color:C.muted }}>Income: {fmt(totalIncome)}</div>
-            {INCOME.map(p => (
-              <div key={p.name} style={{ fontSize:10, color:C.muted }}>{p.name}: {fmt(p.monthly * budgetMultiplier)}</div>
-            ))}
-            <div style={{ fontSize:11, fontWeight:600, color: forecasted >= 0 ? C.green : C.red, marginTop:2 }}>
+            <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>Forecasted Savings</div>
+            <div style={{ display:"flex", gap:12, marginBottom:6 }}>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Income</div>
+                <div style={{ fontSize:18, fontWeight:700, color:C.muted }}>{fmt(totalIncome)}</div>
+              </div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Saved</div>
+                <div style={{ fontSize:18, fontWeight:800, color: forecasted >= 0 ? C.green : C.red }}>{fmt(Math.abs(forecasted))}</div>
+              </div>
+            </div>
+            <div style={{ fontSize:11, fontWeight:600, color: forecasted >= 0 ? C.green : C.red, marginBottom:6 }}>
               {forecasted >= 0 ? `↑ saving` : `↓ overspending`}
             </div>
-            <div style={{ marginTop:8, background:"#08121e", borderRadius:3, height:3 }}>
+            <div style={{ background:"#08121e", borderRadius:3, height:3 }}>
               <div style={{ width:`${Math.min(totalExpenses/totalIncome*100,100)}%`, height:"100%", background: forecasted>=0?C.green:C.red, borderRadius:3, transition:"width 0.4s" }} />
             </div>
           </div>
