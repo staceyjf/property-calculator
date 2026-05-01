@@ -2,8 +2,7 @@ import React, { useState, useRef } from "react";
 import Papa from 'papaparse';
 import { SHEET_CATEGORIES, UP_TO_SHEET, PAYEE_MAPPINGS, SPREADSHEET_ID, ACTUALS_TAB_NAME, INCOME } from './config.js';
 
-const ALL_CAT_NAMES = SHEET_CATEGORIES.map(c => c.name);
-const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const MONTHS =["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 // ─── Robust CSV parser using PapaParse ───────────────────────────────────
 function parseUpCSV(text) {
@@ -129,12 +128,6 @@ function parseAMPCSV(text) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt  = n => "$" + Math.round(n || 0).toLocaleString();
 const fmtD = n => "$" + (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-const fileToBase64 = f => new Promise((res, rej) => {
-  const r = new FileReader();
-  r.onload = () => res(r.result.split(",")[1]);
-  r.onerror = rej;
-  r.readAsDataURL(f);
-});
 
 // ─── Sorted category groups for <select> dropdowns ───────────────────────────
 const asc = (a, b) => a.name.localeCompare(b.name);
@@ -163,7 +156,6 @@ export default function BudgetTrackerComponent() {
   const [endMonth, setEndMonth]     = useState(new Date().getMonth());
   const [year, setYear]             = useState(new Date().getFullYear());
   const [log, setLog]               = useState([]);
-  const [aiParsing, setAiParsing]   = useState(false);
   const [expanded, setExpanded]     = useState(null);
   const [showSheet, setShowSheet]   = useState(false);
   const [drag, setDrag]             = useState(false);
@@ -191,19 +183,6 @@ export default function BudgetTrackerComponent() {
           uncat ? `⚠️  ${uncat} need manual category` : `✅ All auto-categorised`
         ]);
         all = [...all, ...rows];
-
-      } else if (name.endsWith(".pdf")) {
-        setLog(l => [...l, `📑 Sending ${file.name} to Claude…`]);
-        setAiParsing(true);
-        try {
-          const b64 = await fileToBase64(file);
-          const rows = await parseAMPWithAI(b64);
-          setLog(l => [...l, `✅ AMP: ${rows.length} transactions extracted`]);
-          all = [...all, ...rows];
-        } catch(e) {
-          setLog(l => [...l, `❌ AMP failed: ${e.message}`]);
-        }
-        setAiParsing(false);
       }
     }
 
@@ -213,39 +192,6 @@ export default function BudgetTrackerComponent() {
     setTimeout(() => setStep("review"), 900);
   };
 
-  // ─── Claude AI: AMP PDF parser ──────────────────────────────────────────
-  async function parseAMPWithAI(base64) {
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: `Parse AMP Bank statement. Return ONLY a JSON array, no markdown.
-Format: [{"date":"YYYY-MM-DD","payee":"name","amount":12.34,"category":"X"}]
-Categories: ${ALL_CAT_NAMES.join(", ")}
-Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
-        messages: [{ role: "user", content: [
-          { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } },
-          { type: "text", text: "Extract all debit transactions as JSON array." }
-        ]}]
-      })
-    });
-    const data = await resp.json();
-    const raw = (data.content || []).map(b => b.text || "").join("");
-    const clean = raw.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
-    return parsed.map(t => {
-      let category = t.category;
-      for (const [key, cat] of Object.entries(PAYEE_MAPPINGS)) {
-        if (t.payee.toLowerCase().includes(key.toLowerCase())) {
-          category = cat;
-          break;
-        }
-      }
-      return { ...t, category, payee: t.payee.replace(/^PENDING TRANSACTION - Purchase - /, ''), source: "AMP", needsReview: false };
-    });
-  }
 
   // ─── Google Sheets OAuth + write ─────────────────────────────────────────
   const colLetter = idx => {
@@ -603,8 +549,8 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         >
           <div style={{ fontSize:34, marginBottom:10 }}>📂</div>
           <div style={{ fontSize:15, fontWeight:700, color:C.blue, marginBottom:6 }}>Drop files here or click to browse</div>
-          <div style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Up Bank CSV &nbsp;·&nbsp; AMP Bank PDF</div>
-          <input ref={fileRef} type="file" accept=".csv,.pdf" multiple style={{ display:"none" }} onChange={e => processFiles(e.target.files)} />
+          <div style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Up Bank CSV &nbsp;·&nbsp; AMP Bank CSV</div>
+          <input ref={fileRef} type="file" accept=".csv" multiple style={{ display:"none" }} onChange={e => processFiles(e.target.files)} />
         </div>
 
         <div style={{ marginTop:10, textAlign:"center" }}>
@@ -621,7 +567,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
         <div style={{ marginTop:14, padding:"12px 16px", background:"#06101c", borderRadius:10, fontSize:11, color:C.muted, lineHeight:1.9 }}>
           <strong style={{ color:"#4a7a9a" }}>Getting your files:</strong><br />
           <strong>Up Bank:</strong> App → Profile → Export transactions → CSV<br />
-          <strong>AMP:</strong> myAMP.com.au → Accounts → Statements → Download PDF
+          <strong>AMP:</strong> myAMP.com.au → Accounts → Statements → Download CSV
         </div>
       </div>
     </div>
@@ -637,7 +583,6 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
             {log.filter(Boolean).map((l,i) => (
               <div key={i} style={{ color: l.startsWith("✅")?C.green:l.startsWith("❌")?C.red:l.startsWith("⚠️")?C.amber:l.startsWith("📊")||l.startsWith("ℹ️")?C.blue:"#3a6080" }}>{l}</div>
             ))}
-            {aiParsing && <div style={{ color:C.purple }}>◌ Claude reading PDF…</div>}
           </div>
         </div>
       </div>
