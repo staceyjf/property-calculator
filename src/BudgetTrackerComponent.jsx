@@ -171,6 +171,8 @@ export default function BudgetTrackerComponent() {
   const [sheetStatus, setSheetStatus] = useState(null); // null|'writing'|'done'|{error}
   const [driveFiles, setDriveFiles]   = useState(null); // null|'loading'|array
   const [driveSelected, setDriveSelected] = useState(new Set());
+  const [driveSearch, setDriveSearch]   = useState("");
+  const [driveError, setDriveError]     = useState(null);
   const fileRef = useRef(null);
 
   // ─── Process files ──────────────────────────────────────────────────────
@@ -286,13 +288,16 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     if (!googleToken) { signInGoogle(); return; }
     setDriveFiles("loading");
     setDriveSelected(new Set());
+    setDriveError(null);
+    setDriveSearch("");
     try {
-      const q = encodeURIComponent(
-        "(mimeType='text/csv' or mimeType='application/pdf' or name contains '.csv' or name contains '.pdf') and trashed=false"
+      // No MIME filter — list all recent non-trashed files so nothing is missed
+      const data = await driveApi(
+        `/files?q=trashed%3Dfalse&orderBy=modifiedTime%20desc&pageSize=50&includeItemsFromAllDrives=true&supportsAllDrives=true&fields=files(id,name,mimeType,modifiedTime)`
       );
-      const data = await driveApi(`/files?q=${q}&orderBy=modifiedTime%20desc&pageSize=30&fields=files(id,name,mimeType,modifiedTime)`);
       setDriveFiles(data.files || []);
     } catch(e) {
+      setDriveError(e.message);
       setDriveFiles([]);
     }
   };
@@ -306,9 +311,16 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     for (const f of toLoad) {
       setLog(l => [...l, `☁️  Downloading ${f.name}…`]);
       try {
-        const resp = await driveApi(`/files/${f.id}?alt=media`, { raw: true });
+        // Google Sheets files must be exported as CSV; everything else downloads directly
+        const isGSheet = f.mimeType === "application/vnd.google-apps.spreadsheet";
+        const path = isGSheet
+          ? `/files/${f.id}/export?mimeType=text%2Fcsv`
+          : `/files/${f.id}?alt=media&supportsAllDrives=true`;
+        const resp = await driveApi(path, { raw: true });
         const blob = await resp.blob();
-        fileObjects.push(new File([blob], f.name, { type: f.mimeType }));
+        const filename = isGSheet ? f.name + ".csv" : f.name;
+        const mimeType = isGSheet ? "text/csv" : f.mimeType;
+        fileObjects.push(new File([blob], filename, { type: mimeType }));
       } catch(e) {
         setLog(l => [...l, `❌ Failed to download ${f.name}: ${e.message}`]);
       }
@@ -608,38 +620,55 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
               <span style={{ fontSize:12, fontWeight:700, color:"#eef4ff" }}>Google Drive — recent files</span>
               <button onClick={() => setDriveFiles(null)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:16, lineHeight:1 }}>✕</button>
             </div>
+            {driveError && <div style={{ fontSize:11, color:C.red, marginBottom:8 }}>❌ {driveError}</div>}
             {driveFiles === "loading" && <div style={{ fontSize:12, color:C.muted }}>Loading…</div>}
-            {Array.isArray(driveFiles) && driveFiles.length === 0 && (
-              <div style={{ fontSize:12, color:C.muted }}>No CSV or PDF files found in Drive.</div>
-            )}
-            {Array.isArray(driveFiles) && driveFiles.length > 0 && (
+            {Array.isArray(driveFiles) && (
               <>
-                <div style={{ maxHeight:240, overflowY:"auto", marginBottom:10 }}>
-                  {driveFiles.map(f => (
-                    <label key={f.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 4px", borderBottom:`1px solid #0d1e30`, cursor:"pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={driveSelected.has(f.id)}
-                        onChange={e => setDriveSelected(sel => {
-                          const next = new Set(sel);
-                          e.target.checked ? next.add(f.id) : next.delete(f.id);
-                          return next;
+                <input
+                  placeholder="Filter by name…"
+                  value={driveSearch}
+                  onChange={e => setDriveSearch(e.target.value)}
+                  style={{ width:"100%", background:"#060d18", border:`1px solid #1a3050`, borderRadius:6, color:C.text, padding:"6px 10px", fontSize:12, fontFamily:"inherit", marginBottom:8, boxSizing:"border-box" }}
+                />
+                {(() => {
+                  const filtered = driveFiles.filter(f => f.name.toLowerCase().includes(driveSearch.toLowerCase()));
+                  if (filtered.length === 0) return <div style={{ fontSize:12, color:C.muted }}>No files match.</div>;
+                  return (
+                    <>
+                      <div style={{ maxHeight:240, overflowY:"auto", marginBottom:10 }}>
+                        {filtered.map(f => {
+                          const isPdf = f.name.toLowerCase().endsWith('.pdf') || f.mimeType === 'application/pdf';
+                          const isCsv = f.name.toLowerCase().endsWith('.csv') || f.mimeType === 'text/csv' || f.mimeType === 'application/vnd.google-apps.spreadsheet';
+                          const icon = isPdf ? '📑' : isCsv ? '📄' : '📁';
+                          return (
+                            <label key={f.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 4px", borderBottom:`1px solid #0d1e30`, cursor:"pointer" }}>
+                              <input
+                                type="checkbox"
+                                checked={driveSelected.has(f.id)}
+                                onChange={e => setDriveSelected(sel => {
+                                  const next = new Set(sel);
+                                  e.target.checked ? next.add(f.id) : next.delete(f.id);
+                                  return next;
+                                })}
+                                style={{ accentColor: C.blue }}
+                              />
+                              <span style={{ fontSize:14 }}>{icon}</span>
+                              <span style={{ flex:1, fontSize:12, color:C.text }}>{f.name}</span>
+                              <span style={{ fontSize:10, color:C.muted }}>{new Date(f.modifiedTime).toLocaleDateString('en-AU')}</span>
+                            </label>
+                          );
                         })}
-                        style={{ accentColor: C.blue }}
-                      />
-                      <span style={{ fontSize:14 }}>{f.name.toLowerCase().endsWith('.pdf') ? '📑' : '📄'}</span>
-                      <span style={{ flex:1, fontSize:12, color:C.text }}>{f.name}</span>
-                      <span style={{ fontSize:10, color:C.muted }}>{new Date(f.modifiedTime).toLocaleDateString('en-AU')}</span>
-                    </label>
-                  ))}
-                </div>
-                <button
-                  disabled={driveSelected.size === 0}
-                  onClick={loadFromDrive}
-                  style={{ background: driveSelected.size ? C.blue : "#1a3050", color:"#fff", border:"none", borderRadius:7, padding:"9px 18px", fontSize:12, fontWeight:600, cursor: driveSelected.size ? "pointer" : "default", fontFamily:"inherit" }}
-                >
-                  Load {driveSelected.size > 0 ? `${driveSelected.size} file${driveSelected.size > 1 ? 's' : ''}` : 'selected'} →
-                </button>
+                      </div>
+                      <button
+                        disabled={driveSelected.size === 0}
+                        onClick={loadFromDrive}
+                        style={{ background: driveSelected.size ? C.blue : "#1a3050", color:"#fff", border:"none", borderRadius:7, padding:"9px 18px", fontSize:12, fontWeight:600, cursor: driveSelected.size ? "pointer" : "default", fontFamily:"inherit" }}
+                      >
+                        Load {driveSelected.size > 0 ? `${driveSelected.size} file${driveSelected.size > 1 ? 's' : ''}` : 'selected'} →
+                      </button>
+                    </>
+                  );
+                })()}
               </>
             )}
           </div>
