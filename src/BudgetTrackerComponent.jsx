@@ -101,7 +101,7 @@ function parseAMPCSV(text) {
     if (/QANTAS MONEY CC/i.test(desc)) continue;
     if (/Transfer to PayID Superhero/i.test(desc)) continue;
     if (/Transfer to andrew fanner/i.test(desc)) continue;
-    if (/Transfer to PayID S J FANNER$/i.test(desc)) continue;
+    if (/Transfer to PayID S J FANNER/i.test(desc)) continue;
 
     const amtStr = (row.Amount || "").replace(/[$,]/g, "");
     const amt = parseFloat(amtStr);
@@ -623,6 +623,61 @@ export default function BudgetTrackerComponent() {
           </div>
         </div>
 
+        {/* Summary cards */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:12, marginBottom:16 }}>
+          {[
+            { label:"Living Expenses",    actual:livingTotal,                       budget:livingBudget,             color:C.blue   },
+            { label:"Childcare & School", actual:ccTotal,                           budget:ccBudget,                 color:C.purple },
+            { label:"Grand Total",        actual:livingTotal+ccTotal+uncatTotal,    budget:livingBudget+ccBudget,    color:C.green  },
+          ].map(({ label, actual, budget, color }) => {
+            const diff = actual - budget; const over = diff > 0 && budget > 0;
+            const pct = budget > 0 ? Math.min(actual/budget*100, 100) : 0;
+            return (
+              <div key={label} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px" }}>
+                <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>{label}</div>
+                <div style={{ display:"flex", gap:12, marginBottom:6 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Budget</div>
+                    <div style={{ fontSize:18, fontWeight:700, color:C.muted }}>{fmt(budget)}</div>
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Actual</div>
+                    <div style={{ fontSize:18, fontWeight:800, color: over ? C.red : color }}>{fmt(actual)}</div>
+                  </div>
+                </div>
+                {budget>0 && <div style={{ fontSize:11, fontWeight:600, color: over ? C.red : color, marginBottom:6 }}>
+                  {over ? `↑ ${fmt(diff)} over` : `↓ ${fmt(Math.abs(diff))} under`}
+                </div>}
+                <div style={{ background:"#08121e", borderRadius:3, height:3 }}>
+                  <div style={{ width:`${pct}%`, height:"100%", background: over?C.red:color, borderRadius:3, transition:"width 0.4s" }} />
+                </div>
+              </div>
+            );
+          })}
+          {/* Savings card */}
+          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px" }}>
+            <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>
+              {forecasted >= 0 ? "Actual Savings" : "Overspend"}
+            </div>
+            <div style={{ display:"flex", gap:12, marginBottom:6 }}>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Income</div>
+                <div style={{ fontSize:18, fontWeight:700, color:C.muted }}>{fmt(totalIncome)}</div>
+              </div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>{forecasted >= 0 ? "Saved" : "Over by"}</div>
+                <div style={{ fontSize:18, fontWeight:800, color: forecasted >= 0 ? C.green : C.red }}>{fmt(Math.abs(forecasted))}</div>
+              </div>
+            </div>
+            <div style={{ fontSize:11, fontWeight:600, color: forecasted >= 0 ? C.green : C.red, marginBottom:6 }}>
+              {forecasted >= 0 ? `↑ ${fmt(forecasted)} saved` : `↓ ${fmt(Math.abs(forecasted))} over`}
+            </div>
+            <div style={{ background:"#08121e", borderRadius:3, height:3 }}>
+              <div style={{ width:`${Math.min(totalExpenses/totalIncome*100,100)}%`, height:"100%", background: forecasted>=0?C.green:C.red, borderRadius:3, transition:"width 0.4s" }} />
+            </div>
+          </div>
+        </div>
+
         {/* Multi-Month Table */}
         {monthsToShow.length > 1 && (
           <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"16px 18px", marginBottom:12 }}>
@@ -667,58 +722,6 @@ export default function BudgetTrackerComponent() {
             </div>
           </div>
         )}
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:12, marginBottom:16 }}>
-          {[
-            { label:"Living Expenses",    actual:livingTotal,                       budget:livingBudget,             color:C.blue   },
-            { label:"Childcare & School", actual:ccTotal,                           budget:ccBudget,                 color:C.purple },
-            { label:"Grand Total",        actual:livingTotal+ccTotal+uncatTotal,    budget:livingBudget+ccBudget,    color:C.green  },
-          ].map(({ label, actual, budget, color }) => {
-            const diff = actual - budget; const over = diff > 0 && budget > 0;
-            const pct = budget > 0 ? Math.min(actual/budget*100, 100) : 0;
-            return (
-              <div key={label} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px" }}>
-                <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>{label}</div>
-                <div style={{ display:"flex", gap:12, marginBottom:6 }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Budget</div>
-                    <div style={{ fontSize:18, fontWeight:700, color:C.muted }}>{fmt(budget)}</div>
-                  </div>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Actual</div>
-                    <div style={{ fontSize:18, fontWeight:800, color: over ? C.red : color }}>{fmt(actual)}</div>
-                  </div>
-                </div>
-                {budget>0 && <div style={{ fontSize:11, fontWeight:600, color: over ? C.red : color, marginBottom:6 }}>
-                  {over ? `↑ ${fmt(diff)} over` : `↓ ${fmt(Math.abs(diff))} under`}
-                </div>}
-                <div style={{ background:"#08121e", borderRadius:3, height:3 }}>
-                  <div style={{ width:`${pct}%`, height:"100%", background: over?C.red:color, borderRadius:3, transition:"width 0.4s" }} />
-                </div>
-              </div>
-            );
-          })}
-          {/* Savings forecast card */}
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px" }}>
-            <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>Forecasted Savings</div>
-            <div style={{ display:"flex", gap:12, marginBottom:6 }}>
-              <div style={{ flex:1 }}>
-                <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Income</div>
-                <div style={{ fontSize:18, fontWeight:700, color:C.muted }}>{fmt(totalIncome)}</div>
-              </div>
-              <div style={{ flex:1 }}>
-                <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Saved</div>
-                <div style={{ fontSize:18, fontWeight:800, color: forecasted >= 0 ? C.green : C.red }}>{fmt(Math.abs(forecasted))}</div>
-              </div>
-            </div>
-            <div style={{ fontSize:11, fontWeight:600, color: forecasted >= 0 ? C.green : C.red, marginBottom:6 }}>
-              {forecasted >= 0 ? `↑ saving` : `↓ overspending`}
-            </div>
-            <div style={{ background:"#08121e", borderRadius:3, height:3 }}>
-              <div style={{ width:`${Math.min(totalExpenses/totalIncome*100,100)}%`, height:"100%", background: forecasted>=0?C.green:C.red, borderRadius:3, transition:"width 0.4s" }} />
-            </div>
-          </div>
-        </div>
 
         {/* Uncategorised warning block */}
         {needsReview.length > 0 && (
