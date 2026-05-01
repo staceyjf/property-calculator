@@ -155,7 +155,7 @@ function CatOptions({ empty = false }) {
 }
 
 // ─── BudgetTrackerComponent ───────────────────────────────────────────────────
-export default function BudgetTrackerComponent({ onSwitch }) {
+export default function BudgetTrackerComponent() {
   console.log("BudgetTracker rendering");
   const [step, setStep] = useState("upload");
   const [txs, setTxs] = useState([]);
@@ -507,9 +507,6 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
   // ─────────────────────────────────────────────────────────────────────────
   if (step === "upload") return (
     <div style={{ fontFamily:"'DM Mono','Fira Code',monospace", background:C.bg, minHeight:"100vh", color:C.text, padding:24, fontSize:13 }}>
-      <button onClick={onSwitch} style={{ position: 'absolute', top: 20, right: 20, padding: '10px', background: C.blue, color: 'white', border: 'none', borderRadius: 5 }}>
-        Switch to Property Model
-      </button>
       <div style={{ maxWidth:640, margin:"0 auto" }}>
         <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:20, marginBottom:14 }}>
           <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>Fanner's Budget Tracker</div>
