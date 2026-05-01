@@ -169,6 +169,8 @@ export default function BudgetTrackerComponent() {
   const [drag, setDrag]             = useState(false);
   const [googleToken, setGoogleToken] = useState(null);
   const [sheetStatus, setSheetStatus] = useState(null); // null|'writing'|'done'|{error}
+  const [driveFiles, setDriveFiles]   = useState(null); // null|'loading'|array
+  const [driveSelected, setDriveSelected] = useState(new Set());
   const fileRef = useRef(null);
 
   // ─── Process files ──────────────────────────────────────────────────────
@@ -257,7 +259,7 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     if (!window.google) { alert("Google sign-in not loaded yet — try again in a moment."); return; }
     window.google.accounts.oauth2.initTokenClient({
       client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-      scope: "https://www.googleapis.com/auth/spreadsheets",
+      scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly",
       callback: resp => { if (resp.access_token) setGoogleToken(resp.access_token); },
     }).requestAccessToken();
   };
@@ -269,6 +271,49 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
     });
     if (!resp.ok) throw new Error(`Sheets API ${resp.status}: ${await resp.text()}`);
     return resp.json();
+  };
+
+  const driveApi = async (path, { raw = false, ...opts } = {}) => {
+    const resp = await fetch(`https://www.googleapis.com/drive/v3${path}`, {
+      ...opts,
+      headers: { Authorization: `Bearer ${googleToken}`, ...(opts.headers || {}) },
+    });
+    if (!resp.ok) throw new Error(`Drive API ${resp.status}: ${await resp.text()}`);
+    return raw ? resp : resp.json();
+  };
+
+  const browseDrive = async () => {
+    if (!googleToken) { signInGoogle(); return; }
+    setDriveFiles("loading");
+    setDriveSelected(new Set());
+    try {
+      const q = encodeURIComponent(
+        "(mimeType='text/csv' or mimeType='application/pdf' or name contains '.csv' or name contains '.pdf') and trashed=false"
+      );
+      const data = await driveApi(`/files?q=${q}&orderBy=modifiedTime%20desc&pageSize=30&fields=files(id,name,mimeType,modifiedTime)`);
+      setDriveFiles(data.files || []);
+    } catch(e) {
+      setDriveFiles([]);
+    }
+  };
+
+  const loadFromDrive = async () => {
+    const toLoad = (driveFiles || []).filter(f => driveSelected.has(f.id));
+    if (!toLoad.length) return;
+    setDriveFiles(null);
+    setStep("parsing"); setLog(["Fetching from Drive…"]);
+    const fileObjects = [];
+    for (const f of toLoad) {
+      setLog(l => [...l, `☁️  Downloading ${f.name}…`]);
+      try {
+        const resp = await driveApi(`/files/${f.id}?alt=media`, { raw: true });
+        const blob = await resp.blob();
+        fileObjects.push(new File([blob], f.name, { type: f.mimeType }));
+      } catch(e) {
+        setLog(l => [...l, `❌ Failed to download ${f.name}: ${e.message}`]);
+      }
+    }
+    if (fileObjects.length) await processFiles(fileObjects);
   };
 
   const writeToSheet = async () => {
@@ -545,6 +590,60 @@ Rules: skip PENDING, skip credits, amount=positive, omit mortgage repayments`,
           <div style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Up Bank CSV &nbsp;·&nbsp; AMP Bank PDF</div>
           <input ref={fileRef} type="file" accept=".csv,.pdf" multiple style={{ display:"none" }} onChange={e => processFiles(e.target.files)} />
         </div>
+
+        <div style={{ marginTop:10, textAlign:"center" }}>
+          <button
+            onClick={browseDrive}
+            style={{ background:"#0c1a2a", color:C.blue, border:`1px solid #1a3050`, borderRadius:8, padding:"10px 20px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+          >
+            ☁️  Choose from Google Drive
+          </button>
+          {!googleToken && <div style={{ fontSize:10, color:C.muted, marginTop:5 }}>Will prompt Google sign-in</div>}
+        </div>
+
+        {/* Drive file picker */}
+        {driveFiles !== null && (
+          <div style={{ marginTop:14, background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:16 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:"#eef4ff" }}>Google Drive — recent files</span>
+              <button onClick={() => setDriveFiles(null)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:16, lineHeight:1 }}>✕</button>
+            </div>
+            {driveFiles === "loading" && <div style={{ fontSize:12, color:C.muted }}>Loading…</div>}
+            {Array.isArray(driveFiles) && driveFiles.length === 0 && (
+              <div style={{ fontSize:12, color:C.muted }}>No CSV or PDF files found in Drive.</div>
+            )}
+            {Array.isArray(driveFiles) && driveFiles.length > 0 && (
+              <>
+                <div style={{ maxHeight:240, overflowY:"auto", marginBottom:10 }}>
+                  {driveFiles.map(f => (
+                    <label key={f.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 4px", borderBottom:`1px solid #0d1e30`, cursor:"pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={driveSelected.has(f.id)}
+                        onChange={e => setDriveSelected(sel => {
+                          const next = new Set(sel);
+                          e.target.checked ? next.add(f.id) : next.delete(f.id);
+                          return next;
+                        })}
+                        style={{ accentColor: C.blue }}
+                      />
+                      <span style={{ fontSize:14 }}>{f.name.toLowerCase().endsWith('.pdf') ? '📑' : '📄'}</span>
+                      <span style={{ flex:1, fontSize:12, color:C.text }}>{f.name}</span>
+                      <span style={{ fontSize:10, color:C.muted }}>{new Date(f.modifiedTime).toLocaleDateString('en-AU')}</span>
+                    </label>
+                  ))}
+                </div>
+                <button
+                  disabled={driveSelected.size === 0}
+                  onClick={loadFromDrive}
+                  style={{ background: driveSelected.size ? C.blue : "#1a3050", color:"#fff", border:"none", borderRadius:7, padding:"9px 18px", fontSize:12, fontWeight:600, cursor: driveSelected.size ? "pointer" : "default", fontFamily:"inherit" }}
+                >
+                  Load {driveSelected.size > 0 ? `${driveSelected.size} file${driveSelected.size > 1 ? 's' : ''}` : 'selected'} →
+                </button>
+              </>
+            )}
+          </div>
+        )}
 
         <div style={{ marginTop:14, padding:"12px 16px", background:"#06101c", borderRadius:10, fontSize:11, color:C.muted, lineHeight:1.9 }}>
           <strong style={{ color:"#4a7a9a" }}>Getting your files:</strong><br />
