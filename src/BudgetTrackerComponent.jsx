@@ -352,6 +352,10 @@ export default function BudgetTrackerComponent() {
   };
 
   // ─── Derived state ───────────────────────────────────────────────────────
+  const loadedMonths = [...new Set(
+    txs.filter(t => t.date.startsWith(String(year))).map(t => parseInt(t.date.split("-")[1]) - 1)
+  )].sort((a, b) => a - b);
+
   const monthsToShow = [];
   for (let m = startMonth; m <= endMonth; m++) monthsToShow.push(m);
 
@@ -414,8 +418,9 @@ export default function BudgetTrackerComponent() {
   const forecasted    = totalIncome - totalExpenses;
 
   // ─── Colours ─────────────────────────────────────────────────────────────
-  const C = { bg:"#070d1a", card:"#0c1422", border:"#142030", text:"#d8e8f5", muted:"#3a5570",
-    blue:"#3d8ef0", green:"#27c99a", amber:"#f0a020", red:"#e05555", purple:"#9d7ff5" };
+  const C = { bg:"#f9fafb", card:"#ffffff", border:"#e5e7eb", text:"#111827", muted:"#6b7280",
+    blue:"#2563eb", green:"#059669", amber:"#d97706", red:"#dc2626", purple:"#7c3aed" };
+  const shadow = "0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04)";
 
   // ─── Category row component ──────────────────────────────────────────────
   function CatRow({ cat, accent }) {
@@ -433,7 +438,7 @@ export default function BudgetTrackerComponent() {
           onClick={() => rows.length > 0 && setExpanded(open ? null : cat.name)}
           style={{ display:"flex", alignItems:"center", padding:"7px 8px", borderRadius:7,
             cursor: rows.length > 0 ? "pointer" : "default",
-            background: open ? "#091828" : "transparent", gap:6, userSelect:"none" }}
+            background: open ? "#f3f4f6" : "transparent", gap:6, userSelect:"none" }}
         >
           <span style={{ color:C.muted, fontSize:9, width:10 }}>{rows.length > 0 ? (open?"▼":"▶") : " "}</span>
           <span style={{ flex:1, fontSize:12, color: actual>0 ? C.text : C.muted }}>
@@ -441,7 +446,7 @@ export default function BudgetTrackerComponent() {
             {rows.length > 0 && <span style={{ color:C.muted, fontSize:10, marginLeft:5 }}>({rows.length})</span>}
           </span>
           {/* progress bar */}
-          <div style={{ width:50, height:3, background:"#0a1622", borderRadius:2, flexShrink:0 }}>
+          <div style={{ width:50, height:3, background:"#f3f4f6", borderRadius:2, flexShrink:0 }}>
             {pct > 0 && <div style={{ width:`${pct}%`, height:"100%", background: over ? C.red : accent, borderRadius:2 }} />}
           </div>
           <span style={{ fontSize:11, color:C.muted, width:68, textAlign:"right" }}>
@@ -458,14 +463,19 @@ export default function BudgetTrackerComponent() {
         </div>
 
         {open && (
-          <div style={{ background:"#04080f", borderRadius:8, margin:"2px 0 4px 18px", padding:"4px 10px" }}>
+          <div style={{ background:"#f9fafb", borderRadius:8, margin:"2px 0 4px 18px", padding:"4px 10px" }}>
             {rows.map((t, i) => (
               <div key={i} style={{ display:"flex", alignItems:"center", padding:"5px 0", borderBottom:`1px solid ${C.border}`, gap:8, fontSize:11 }}>
-                <span style={{ color:C.muted, width:86, flexShrink:0 }}>{t.date}</span>
-                <span style={{ flex:1, color:"#90aac8" }}>{t.payee}</span>
+                <input
+                  type="date"
+                  value={t.date}
+                  style={{ background:"transparent", border:"none", borderBottom:`1px solid ${C.border}`, color:C.muted, padding:"1px 2px", fontSize:10, fontFamily:"inherit", width:96, flexShrink:0, cursor:"pointer" }}
+                  onChange={e => { if (e.target.value) setTxs(prev => prev.map((x,j) => j===t._i ? {...x, date:e.target.value} : x)); }}
+                />
+                <span style={{ flex:1, color:"#374151" }}>{t.payee}</span>
                 <span style={{ color:C.muted, fontSize:10, marginRight:4 }}>{t.source}</span>
                 <select
-                  style={{ background:"#060e1a", border:`1px solid ${C.border}`, borderRadius:5, color:C.text, padding:"2px 6px", fontSize:10, fontFamily:"inherit" }}
+                  style={{ background:"#f9fafb", border:`1px solid ${C.border}`, borderRadius:5, color:C.text, padding:"2px 6px", fontSize:10, fontFamily:"inherit" }}
                   value={t.category || ""}
                   onChange={e => {
                     const newCat = e.target.value;
@@ -513,75 +523,53 @@ export default function BudgetTrackerComponent() {
 
   // ─────────────────────────────────────────────────────────────────────────
   if (step === "upload") return (
-    <div style={{ fontFamily:"'DM Mono','Fira Code',monospace", background:C.bg, minHeight:"100vh", color:C.text, padding:24, fontSize:13 }}>
+    <div style={{ fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", background:C.bg, minHeight:"100vh", color:C.text, padding:24, fontSize:13 }}>
       <div style={{ maxWidth:640, margin:"0 auto" }}>
-        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:20, marginBottom:14 }}>
-          <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>Fanner's Budget Tracker</div>
-          <div style={{ fontSize:12, color:C.muted, marginTop:3 }}>Up Bank + AMP → budget reconciliation</div>
-        </div>
-
-        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:18, marginBottom:14 }}>
-          <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8 }}>Date range to reconcile</div>
-          <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
-            <select style={{ background:"#060d18", border:`1px solid #1a3050`, borderRadius:7, color:C.text, padding:"7px 10px", fontSize:12, fontFamily:"inherit" }}
-              value={year} onChange={e => setYear(+e.target.value)}>
-              {[2025,2026,2027].map(y => <option key={y}>{y}</option>)}
-            </select>
-            <span style={{ color:C.muted, fontSize:12 }}>From</span>
-            <select style={{ background:"#060d18", border:`1px solid #1a3050`, borderRadius:7, color:C.text, padding:"7px 10px", fontSize:12, fontFamily:"inherit" }}
-              value={startMonth} onChange={e => { const v = +e.target.value; setStartMonth(v); if (v > endMonth) setEndMonth(v); }}>
-              {MONTHS.map((m,i) => <option key={m} value={i}>{m}</option>)}
-            </select>
-            <span style={{ color:C.muted, fontSize:12 }}>To</span>
-            <select style={{ background:"#060d18", border:`1px solid #1a3050`, borderRadius:7, color:C.text, padding:"7px 10px", fontSize:12, fontFamily:"inherit" }}
-              value={endMonth} onChange={e => { const v = +e.target.value; setEndMonth(v); if (v < startMonth) setStartMonth(v); }}>
-              {MONTHS.map((m,i) => <option key={m} value={i}>{m}</option>)}
-            </select>
-          </div>
+        <div style={{ paddingBottom:20, marginBottom:20, borderBottom:`1px solid ${C.border}` }}>
+          <div style={{ fontSize:22, fontWeight:700, color:C.text, letterSpacing:"-0.025em" }}>Fanner's Budget Tracker</div>
+          <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>Up Bank + AMP — budget reconciliation</div>
         </div>
 
         <div
-          style={{ border:`2px dashed ${drag ? C.blue : "#1a3050"}`, borderRadius:14, padding:"40px 24px", textAlign:"center", cursor:"pointer", background: drag?"#091a30":"transparent", transition:"all 0.15s" }}
+          style={{ border:`2px dashed ${drag ? C.blue : "#e5e7eb"}`, borderRadius:14, padding:"36px 24px", textAlign:"center", cursor:"pointer", background: drag?"#eff6ff":"transparent", transition:"all 0.15s" }}
           onDrop={e => { e.preventDefault(); setDrag(false); processFiles(e.dataTransfer.files); }}
           onDragOver={e => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
           onClick={() => fileRef.current?.click()}
         >
-          <div style={{ fontSize:34, marginBottom:10 }}>📂</div>
-          <div style={{ fontSize:15, fontWeight:700, color:C.blue, marginBottom:6 }}>Drop files here or click to browse</div>
-          <div style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Up Bank CSV &nbsp;·&nbsp; AMP Bank CSV</div>
+          <div style={{ fontSize:30, marginBottom:10, opacity:0.4 }}>↑</div>
+          <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>Drop files here or click to browse</div>
+          <div style={{ fontSize:12, color:C.muted }}>Up Bank CSV · AMP Bank CSV</div>
           <input ref={fileRef} type="file" accept=".csv" multiple style={{ display:"none" }} onChange={e => processFiles(e.target.files)} />
-        </div>
 
-        <div style={{ marginTop:10, textAlign:"center" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, margin:"20px 0 16px" }}>
+            <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
+            <span style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em" }}>or</span>
+            <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
+          </div>
+
           <button
-            onClick={openDrivePicker}
-            style={{ background:"#0c1a2a", color:C.blue, border:`1px solid #1a3050`, borderRadius:8, padding:"10px 20px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+            onClick={e => { e.stopPropagation(); openDrivePicker(); }}
+            style={{ background:"transparent", color:C.text, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 18px", fontSize:12, fontWeight:500, cursor:"pointer", fontFamily:"inherit" }}
           >
-            ☁️  Choose from Google Drive
+            Google Drive{!googleToken && <span style={{ color:C.muted, fontWeight:400, marginLeft:6, fontSize:11 }}>· sign in required</span>}
           </button>
-          {!googleToken && <div style={{ fontSize:10, color:C.muted, marginTop:5 }}>Will prompt Google sign-in</div>}
-          {driveError && <div style={{ fontSize:11, color:C.red, marginTop:6 }}>❌ {driveError}</div>}
+          {driveError && <div style={{ fontSize:11, color:C.red, marginTop:8 }}>❌ {driveError}</div>}
         </div>
 
-        <div style={{ marginTop:14, padding:"12px 16px", background:"#06101c", borderRadius:10, fontSize:11, color:C.muted, lineHeight:1.9 }}>
-          <strong style={{ color:"#4a7a9a" }}>Getting your files:</strong><br />
-          <strong>Up Bank:</strong> App → Profile → Export transactions → CSV<br />
-          <strong>AMP:</strong> myAMP.com.au → Accounts → Statements → Download CSV
-        </div>
       </div>
     </div>
   );
 
   // ─────────────────────────────────────────────────────────────────────────
   if (step === "parsing") return (
-    <div style={{ fontFamily:"'DM Mono','Fira Code',monospace", background:C.bg, minHeight:"100vh", color:C.text, padding:24 }}>
+    <div style={{ fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", background:C.bg, minHeight:"100vh", color:C.text, padding:24 }}>
       <div style={{ maxWidth:640, margin:"0 auto" }}>
-        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:20 }}>
-          <div style={{ fontSize:18, fontWeight:700, color:"#eef4ff", marginBottom:14 }}>Parsing files…</div>
-          <div style={{ background:"#040a12", borderRadius:10, padding:14, fontFamily:"monospace", fontSize:12, lineHeight:2.1, minHeight:100 }}>
+        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:shadow, padding:20 }}>
+          <div style={{ fontSize:18, fontWeight:700, color:C.text, marginBottom:14 }}>Parsing files…</div>
+          <div style={{ background:"#f3f4f6", borderRadius:8, padding:14, fontFamily:"'SF Mono','Fira Code',monospace", fontSize:12, lineHeight:2.0, minHeight:100 }}>
             {log.filter(Boolean).map((l,i) => (
-              <div key={i} style={{ color: l.startsWith("✅")?C.green:l.startsWith("❌")?C.red:l.startsWith("⚠️")?C.amber:l.startsWith("📊")||l.startsWith("ℹ️")?C.blue:"#3a6080" }}>{l}</div>
+              <div key={i} style={{ color: l.startsWith("✅")?C.green:l.startsWith("❌")?C.red:l.startsWith("⚠️")?C.amber:l.startsWith("📊")||l.startsWith("ℹ️")?C.blue:C.muted }}>{l}</div>
             ))}
           </div>
         </div>
@@ -593,13 +581,13 @@ export default function BudgetTrackerComponent() {
   // REVIEW
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div style={{ fontFamily:"'DM Mono','Fira Code',monospace", background:C.bg, minHeight:"100vh", color:C.text, padding:24, fontSize:13 }}>
+    <div style={{ fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", background:C.bg, minHeight:"100vh", color:C.text, padding:24, fontSize:13 }}>
       <div style={{ maxWidth:860, margin:"0 auto" }}>
 
         {/* Header */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16, flexWrap:"wrap", gap:10 }}>
           <div>
-            <div style={{ fontSize:20, fontWeight:700, color:"#eef4ff", letterSpacing:"-0.02em" }}>
+            <div style={{ fontSize:20, fontWeight:700, color:C.text, letterSpacing:"-0.02em" }}>
               {rangeLabel}
             </div>
             <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>
@@ -608,13 +596,33 @@ export default function BudgetTrackerComponent() {
                 ? <span style={{ color:C.amber }}>{needsReview.length} uncategorised</span>
                 : <span style={{ color:C.green }}>all categorised ✅</span>}
             </div>
+            {loadedMonths.length > 1 && (
+              <div style={{ marginTop:8, display:"flex", gap:8, alignItems:"center" }}>
+                <span style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em" }}>View</span>
+                <select
+                  style={{ background:"#f9fafb", border:`1px solid #e5e7eb`, borderRadius:7, color:C.text, padding:"5px 8px", fontSize:11, fontFamily:"inherit" }}
+                  value={startMonth}
+                  onChange={e => { const v = +e.target.value; setStartMonth(v); if (v > endMonth) setEndMonth(v); }}
+                >
+                  {loadedMonths.map(m => <option key={m} value={m}>{MONTHS[m]}</option>)}
+                </select>
+                <span style={{ color:C.muted, fontSize:12 }}>→</span>
+                <select
+                  style={{ background:"#f9fafb", border:`1px solid #e5e7eb`, borderRadius:7, color:C.text, padding:"5px 8px", fontSize:11, fontFamily:"inherit" }}
+                  value={endMonth}
+                  onChange={e => { const v = +e.target.value; setEndMonth(v); if (v < startMonth) setStartMonth(v); }}
+                >
+                  {loadedMonths.map(m => <option key={m} value={m}>{MONTHS[m]}</option>)}
+                </select>
+              </div>
+            )}
           </div>
           <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-            <button style={{ background:"#0c1a2a", color:C.blue, border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={() => { setTxs([]); setStep("upload"); }}>← Upload</button>
-            <button style={{ background:"#0c1a2a", color:C.muted, border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }} onClick={() => setShowSheet(s => !s)}>Preview</button>
+            <button style={{ background:"transparent", color:C.muted, border:`1px solid ${C.border}`, borderRadius:6, padding:"7px 14px", fontSize:12, fontWeight:500, cursor:"pointer", fontFamily:"inherit" }} onClick={() => { setTxs([]); setStep("upload"); }}>← Upload</button>
+            <button style={{ background:"transparent", color:C.text, border:`1px solid ${C.border}`, borderRadius:6, padding:"7px 14px", fontSize:12, fontWeight:500, cursor:"pointer", fontFamily:"inherit" }} onClick={() => setShowSheet(s => !s)}>Preview</button>
             <button
               disabled={sheetStatus === "writing"}
-              style={{ background: sheetStatus?.done ? "#1a5a3a" : "#1a4a8a", color:"#fff", border:"none", borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+              style={{ background: sheetStatus?.done ? C.green : C.blue, color:"#fff", border:"none", borderRadius:6, padding:"7px 14px", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
               onClick={() => { setSheetStatus(null); writeToSheet(); }}
             >
               {sheetStatus === "writing" ? "Writing…" : sheetStatus?.done ? sheetStatus.msg : googleToken ? `Write ${rangeLabel} →` : `Connect & Write →`}
@@ -633,7 +641,7 @@ export default function BudgetTrackerComponent() {
             const diff = actual - budget; const over = diff > 0 && budget > 0;
             const pct = budget > 0 ? Math.min(actual/budget*100, 100) : 0;
             return (
-              <div key={label} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px" }}>
+              <div key={label} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:shadow, padding:"14px 18px" }}>
                 <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>{label}</div>
                 <div style={{ display:"flex", gap:12, marginBottom:6 }}>
                   <div style={{ flex:1 }}>
@@ -648,14 +656,14 @@ export default function BudgetTrackerComponent() {
                 {budget>0 && <div style={{ fontSize:11, fontWeight:600, color: over ? C.red : color, marginBottom:6 }}>
                   {over ? `↑ ${fmt(diff)} over` : `↓ ${fmt(Math.abs(diff))} under`}
                 </div>}
-                <div style={{ background:"#08121e", borderRadius:3, height:3 }}>
+                <div style={{ background:"#f3f4f6", borderRadius:3, height:3 }}>
                   <div style={{ width:`${pct}%`, height:"100%", background: over?C.red:color, borderRadius:3, transition:"width 0.4s" }} />
                 </div>
               </div>
             );
           })}
           {/* Savings card */}
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px" }}>
+          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:shadow, padding:"14px 18px" }}>
             <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>
               {forecasted >= 0 ? "Actual Savings" : "Overspend"}
             </div>
@@ -672,15 +680,37 @@ export default function BudgetTrackerComponent() {
             <div style={{ fontSize:11, fontWeight:600, color: forecasted >= 0 ? C.green : C.red, marginBottom:6 }}>
               {forecasted >= 0 ? `↑ ${fmt(forecasted)} saved` : `↓ ${fmt(Math.abs(forecasted))} over`}
             </div>
-            <div style={{ background:"#08121e", borderRadius:3, height:3 }}>
+            <div style={{ background:"#f3f4f6", borderRadius:3, height:3 }}>
               <div style={{ width:`${Math.min(totalExpenses/totalIncome*100,100)}%`, height:"100%", background: forecasted>=0?C.green:C.red, borderRadius:3, transition:"width 0.4s" }} />
             </div>
           </div>
         </div>
 
+        {/* Uncategorised warning block */}
+        {needsReview.length > 0 && (
+          <div style={{ background:"#fffbeb", border:`1px solid #fcd34d`, borderRadius:8, padding:16, marginBottom:14 }}>
+            <div style={{ fontWeight:700, color:C.amber, marginBottom:10 }}>⚠️  {needsReview.length} transactions need a category</div>
+            {needsReview.map((t, i) => (
+              <div key={i} style={{ display:"flex", alignItems:"center", padding:"6px 0", borderBottom:`1px solid #f0e8c0`, gap:8, fontSize:11 }}>
+                <span style={{ color:C.muted, width:90, flexShrink:0 }}>{t.date}</span>
+                <span style={{ flex:1 }}>{t.payee}</span>
+                <span style={{ color:C.muted, fontSize:10 }}>{t.upCategory}</span>
+                <select
+                  style={{ background:"#f9fafb", border:`1px solid #e8c060`, borderRadius:6, color:C.text, padding:"3px 8px", fontSize:11, fontFamily:"inherit" }}
+                  value={t.category || ""}
+                  onChange={e => { if (!e.target.value) return; setTxs(prev => prev.map(x => x===t ? {...x, category:e.target.value} : x)); }}
+                >
+                  <CatOptions empty />
+                </select>
+                <span style={{ color:C.amber, fontWeight:700, width:72, textAlign:"right" }}>{fmtD(t.amount)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Multi-Month Table */}
         {monthsToShow.length > 1 && (
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"16px 18px", marginBottom:12 }}>
+          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:shadow, padding:"16px 18px", marginBottom:12 }}>
             <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:12 }}>Actual vs Budget</div>
             <div style={{ overflowX:"auto" }}>
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
@@ -723,37 +753,15 @@ export default function BudgetTrackerComponent() {
           </div>
         )}
 
-        {/* Uncategorised warning block */}
-        {needsReview.length > 0 && (
-          <div style={{ background:"#160f00", border:`1px solid #3a2800`, borderRadius:12, padding:16, marginBottom:14 }}>
-            <div style={{ fontWeight:700, color:C.amber, marginBottom:10 }}>⚠️  {needsReview.length} transactions need a category</div>
-            {needsReview.map((t, i) => (
-              <div key={i} style={{ display:"flex", alignItems:"center", padding:"6px 0", borderBottom:`1px solid #1a1000`, gap:8, fontSize:11 }}>
-                <span style={{ color:C.muted, width:90, flexShrink:0 }}>{t.date}</span>
-                <span style={{ flex:1 }}>{t.payee}</span>
-                <span style={{ color:C.muted, fontSize:10 }}>{t.upCategory}</span>
-                <select
-                  style={{ background:"#060d18", border:`1px solid #3a2800`, borderRadius:6, color:C.text, padding:"3px 8px", fontSize:11, fontFamily:"inherit" }}
-                  value={t.category || ""}
-                  onChange={e => { if (!e.target.value) return; setTxs(prev => prev.map(x => x===t ? {...x, category:e.target.value} : x)); }}
-                >
-                  <CatOptions empty />
-                </select>
-                <span style={{ color:C.amber, fontWeight:700, width:72, textAlign:"right" }}>{fmtD(t.amount)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
         {/* Living Expenses */}
-        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"16px 18px", marginBottom:12 }}>
+        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:shadow, padding:"16px 18px", marginBottom:12 }}>
           <SectionHeader label="Living Expenses" actual={livingTotal} budget={livingBudget} color={C.blue} />
           <ColLabels />
           {livingCats.map(cat => <CatRow key={cat.name} cat={cat} accent={C.blue} />)}
         </div>
 
         {/* Childcare */}
-        <div style={{ background:"#0b0818", border:`1px solid #1e1040`, borderRadius:12, padding:"16px 18px", marginBottom:12 }}>
+        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:shadow, padding:"16px 18px", marginBottom:12 }}>
           <SectionHeader label="Childcare & School" actual={ccTotal} budget={ccBudget} color={C.purple} />
           <ColLabels />
           {childcareCats.map(cat => <CatRow key={cat.name} cat={cat} accent={C.purple} />)}
@@ -761,11 +769,11 @@ export default function BudgetTrackerComponent() {
 
         {/* Sheet update panel */}
         {showSheet && (
-          <div style={{ background:"#08141e", border:`1px solid #1a3a5a`, borderRadius:12, padding:18, marginBottom:12 }}>
-            <div style={{ fontWeight:700, color:C.blue, marginBottom:10, fontSize:13 }}>
-              📋 Actuals for {rangeLabel} — paste into your Sheet
+          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:shadow, padding:18, marginBottom:12 }}>
+            <div style={{ fontWeight:600, color:C.text, marginBottom:12, fontSize:13 }}>
+              Actuals for {rangeLabel}
             </div>
-            <div style={{ background:"#030a12", borderRadius:10, padding:14, fontFamily:"monospace", fontSize:11, lineHeight:2.1 }}>
+            <div style={{ background:"#f9fafb", borderRadius:6, padding:14, fontFamily:"'SF Mono','Fira Code',monospace", fontSize:11, lineHeight:2.0 }}>
               {SHEET_CATEGORIES.filter(c => !c.exclude).map(cat => {
                 const actual = totals[cat.name] || 0;
                 return (
@@ -783,7 +791,7 @@ export default function BudgetTrackerComponent() {
             </div>
             {!googleToken && (
               <div style={{ marginTop:10, fontSize:11, color:C.muted }}>
-                Click <strong style={{ color:"#4a7a9a" }}>Connect Google →</strong> above to write these values directly to your Sheet.
+                Click <strong style={{ color:C.blue }}>Connect Google →</strong> above to write these values directly to your Sheet.
               </div>
             )}
           </div>
