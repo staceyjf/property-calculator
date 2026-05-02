@@ -760,73 +760,84 @@ export default function BudgetTrackerComponent() {
   );
 
   // ─────────────────────────────────────────────────────────────────────────
-  const SUPPORTED_BANKS = ["Up Bank", "AMP", "CommBank", "Macquarie"];
+  const BANK_BRANDS = [
+    { name:"Up Bank",   bg:"#FF4E00", color:"#fff"     },
+    { name:"AMP",       bg:"#00827F", color:"#fff"     },
+    { name:"CommBank",  bg:"#FFCD00", color:"#1a1a1a"  },
+    { name:"Macquarie", bg:"#1A1A2E", color:"#fff"     },
+  ];
 
   if (step === "upload") return (
-    <div style={{ fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", background:C.bg, minHeight:"100vh", color:C.text, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 24px" }}>
-      <div style={{ width:"100%", maxWidth:520 }}>
+    <div style={{ fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", background:"#f4f5f7", minHeight:"100vh", color:C.text, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 24px" }}>
+      <div style={{ width:"100%", maxWidth:480 }}>
 
         {/* Header */}
-        <div style={{ textAlign:"center", marginBottom:40 }}>
-          <div style={{ fontSize:24, fontWeight:700, color:C.text, letterSpacing:"-0.025em" }}>Fanner's Budget Tracker</div>
-          <div style={{ fontSize:13, color:C.muted, marginTop:6 }}>Household budget reconciliation</div>
-        </div>
-
-        {/* Drop zone */}
-        <div
-          style={{ border:`2px dashed ${drag ? C.blue : "#d1d5db"}`, borderRadius:16, padding:"48px 32px", textAlign:"center", cursor:"pointer", background: drag?"#eff6ff":"#ffffff", transition:"all 0.15s", boxShadow:shadow, marginBottom:20 }}
-          onDrop={e => { e.preventDefault(); setDrag(false); processFiles(e.dataTransfer.files); }}
-          onDragOver={e => { e.preventDefault(); setDrag(true); }}
-          onDragLeave={() => setDrag(false)}
-          onClick={() => fileRef.current?.click()}
-        >
-          <div style={{ fontSize:32, marginBottom:12, opacity:0.25 }}>↑</div>
-          <div style={{ fontSize:15, fontWeight:600, color:C.text, marginBottom:4 }}>Drop CSV files here or click to browse</div>
-          <div style={{ fontSize:12, color:C.muted }}>You can drop multiple files at once</div>
-        </div>
-
-        <input ref={fileRef} type="file" accept=".csv" multiple style={{ display:"none" }} onChange={e => processFiles(e.target.files)} />
-
-        {/* Or + Drive */}
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
-          <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
-          <span style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em" }}>or</span>
-          <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
-        </div>
-        <div style={{ textAlign:"center", marginBottom:40 }}>
-          <button
-            onClick={e => { e.stopPropagation(); openDrivePicker(); }}
-            style={{ background:"transparent", color:C.text, border:`1px solid ${C.border}`, borderRadius:6, padding:"9px 22px", fontSize:12, fontWeight:500, cursor:"pointer", fontFamily:"inherit" }}
-          >
-            Google Drive{!googleToken && <span style={{ color:C.muted, fontWeight:400, marginLeft:6, fontSize:11 }}>· sign in required</span>}
-          </button>
-          {driveError && <div style={{ fontSize:11, color:C.red, marginTop:8 }}>❌ {driveError}</div>}
-        </div>
-
-        {/* Supported banks */}
-        <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:28, marginBottom:24 }}>
-          <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:14 }}>Supported banks</div>
-          <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-            {SUPPORTED_BANKS.map(b => (
-              <div key={b} style={{ background:"#ffffff", border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 16px", boxShadow:shadow, fontWeight:600, fontSize:12, color:C.text }}>
-                {b}
-              </div>
+        <div style={{ textAlign:"center", marginBottom:32 }}>
+          <div style={{ fontSize:26, fontWeight:700, color:C.text, letterSpacing:"-0.03em", marginBottom:8 }}>Fanner's Budget Tracker</div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:16 }}>Household budget reconciliation</div>
+          {/* Bank brand chips */}
+          <div style={{ display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap" }}>
+            {BANK_BRANDS.map(b => (
+              <span key={b.name} style={{ background:b.bg, color:b.color, borderRadius:20, padding:"4px 12px", fontSize:11, fontWeight:600, letterSpacing:"0.01em" }}>
+                {b.name}
+              </span>
             ))}
           </div>
-          <div style={{ fontSize:11, color:C.muted, marginTop:12, textAlign:"center" }}>Format detected automatically — no configuration needed</div>
         </div>
 
-        {/* Parse log (persists after last import) */}
+        {/* Upload card */}
+        <div style={{ background:"#ffffff", borderRadius:20, boxShadow:"0 4px 24px rgba(0,0,0,0.08)", overflow:"hidden", marginBottom:16 }}>
+
+          {/* Drop zone */}
+          <div
+            style={{ border:`2px dashed ${drag ? C.blue : "#d1d5db"}`, borderRadius:14, margin:16, padding:"44px 24px", textAlign:"center", cursor:"pointer", background: drag?"#eff6ff":"#fafafa", transition:"all 0.15s" }}
+            onDrop={e => { e.preventDefault(); setDrag(false); processFiles(e.dataTransfer.files); }}
+            onDragOver={e => { e.preventDefault(); setDrag(true); }}
+            onDragLeave={() => setDrag(false)}
+            onClick={() => fileRef.current?.click()}
+          >
+            <div style={{ fontSize:28, marginBottom:10, opacity:0.2 }}>↑</div>
+            <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>Drop CSV files here</div>
+            <div style={{ fontSize:12, color:C.muted }}>or click to browse — multiple files at once</div>
+          </div>
+
+          <input ref={fileRef} type="file" accept=".csv" multiple style={{ display:"none" }} onChange={e => processFiles(e.target.files)} />
+
+          {/* Divider */}
+          <div style={{ display:"flex", alignItems:"center", gap:10, padding:"0 24px", marginBottom:16 }}>
+            <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
+            <span style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em" }}>or</span>
+            <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
+          </div>
+
+          {/* Google Drive */}
+          <div style={{ textAlign:"center", paddingBottom:20 }}>
+            <button
+              onClick={e => { e.stopPropagation(); openDrivePicker(); }}
+              style={{ background:"transparent", color:C.text, border:`1px solid ${C.border}`, borderRadius:8, padding:"9px 22px", fontSize:12, fontWeight:500, cursor:"pointer", fontFamily:"inherit" }}
+            >
+              {googleToken ? "Google Drive ✓" : "Import from Google Drive"}
+            </button>
+            {driveError && <div style={{ fontSize:11, color:C.red, marginTop:8 }}>❌ {driveError}</div>}
+          </div>
+        </div>
+
+        <div style={{ fontSize:11, color:"#9ca3af", textAlign:"center", marginBottom:28 }}>
+          Format detected automatically — no configuration needed
+        </div>
+
+        {/* Parse log */}
         {log.filter(Boolean).length > 0 && (
-          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:24 }}>
-            <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>Last import log</div>
-            <div style={{ background:"#f3f4f6", borderRadius:8, padding:"12px 14px", fontFamily:"'SF Mono','Fira Code',monospace", fontSize:11, lineHeight:1.9 }}>
+          <div style={{ background:"#ffffff", borderRadius:16, boxShadow:"0 2px 12px rgba(0,0,0,0.06)", padding:"16px 18px" }}>
+            <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>Last import</div>
+            <div style={{ background:"#f3f4f6", borderRadius:8, padding:"10px 12px", fontFamily:"'SF Mono','Fira Code',monospace", fontSize:11, lineHeight:1.9 }}>
               {log.filter(Boolean).map((l,i) => (
                 <div key={i} style={{ color: l.startsWith("✅")?C.green:l.startsWith("❌")?C.red:l.startsWith("⚠️")?C.amber:l.startsWith("📊")||l.startsWith("ℹ️")||l.startsWith("💰")?C.blue:C.muted }}>{l}</div>
               ))}
             </div>
           </div>
         )}
+
 
       </div>
     </div>
