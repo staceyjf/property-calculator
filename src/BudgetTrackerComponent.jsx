@@ -98,6 +98,7 @@ function parseMacCSV(text) {
     // Skip all other credits and internal transfer-outs
     if (isNaN(debit) || debit <= 0) continue;
     if (/Transfer|Funds Transfer/i.test(details)) continue;
+    if (/^To /i.test(details)) continue; // relay-outs like "To Stacey Johanna Fanner - Salary..."
 
     // Any real expenses
     let category = null;
@@ -239,6 +240,7 @@ function parseAMPCSV(text) {
     if (/Transfer to PayID Superhero/i.test(desc)) continue;
     if (/Transfer to andrew fanner/i.test(desc)) continue;
     if (/Transfer to PayID S J FANNER/i.test(desc)) continue;
+    if (/Transfer to rapid-teks/i.test(desc)) continue;
 
     let category = null;
     for (const [key, cat] of Object.entries(PAYEE_MAPPINGS)) {
@@ -373,12 +375,27 @@ export default function BudgetTrackerComponent() {
   };
 
   const signInGoogle = () => {
-    if (!window.google) { alert("Google sign-in not loaded yet — try again in a moment."); return; }
-    window.google.accounts.oauth2.initTokenClient({
-      client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-      scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly",
-      callback: resp => { if (resp.access_token) setGoogleToken(resp.access_token); },
-    }).requestAccessToken();
+    if (!window.google?.accounts?.oauth2) {
+      setDriveError("Google sign-in not loaded yet — wait a moment and try again.");
+      return;
+    }
+    if (!import.meta.env.VITE_GOOGLE_CLIENT_ID) {
+      setDriveError("VITE_GOOGLE_CLIENT_ID is not set in your .env file.");
+      return;
+    }
+    try {
+      window.google.accounts.oauth2.initTokenClient({
+        client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+        scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly",
+        callback: resp => {
+          if (resp.error) { setDriveError(`Sign-in failed: ${resp.error}`); return; }
+          if (resp.access_token) { setDriveError(null); setGoogleToken(resp.access_token); }
+        },
+        error_callback: err => setDriveError(`Sign-in error: ${err.type || err.message || JSON.stringify(err)}`),
+      }).requestAccessToken();
+    } catch(e) {
+      setDriveError(`Sign-in error: ${e.message}`);
+    }
   };
 
   const sheetsApi = async (path, opts = {}) => {
@@ -743,12 +760,7 @@ export default function BudgetTrackerComponent() {
   );
 
   // ─────────────────────────────────────────────────────────────────────────
-  const SUPPORTED_BANKS = [
-    { name:"Up Bank",   note:"Spending account CSV exports"    },
-    { name:"AMP",       note:"Transaction account CSV exports" },
-    { name:"CommBank",  note:"Andrew's salary account"         },
-    { name:"Macquarie", note:"Stacey's salary account"         },
-  ];
+  const SUPPORTED_BANKS = ["Up Bank", "AMP", "CommBank", "Macquarie"];
 
   if (step === "upload") return (
     <div style={{ fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", background:C.bg, minHeight:"100vh", color:C.text, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 24px" }}>
@@ -794,11 +806,10 @@ export default function BudgetTrackerComponent() {
         {/* Supported banks */}
         <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:28, marginBottom:24 }}>
           <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:14 }}>Supported banks</div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
             {SUPPORTED_BANKS.map(b => (
-              <div key={b.name} style={{ background:"#ffffff", border:`1px solid ${C.border}`, borderRadius:8, padding:"10px 14px", boxShadow:shadow }}>
-                <div style={{ fontWeight:600, fontSize:12, color:C.text, marginBottom:2 }}>{b.name}</div>
-                <div style={{ fontSize:11, color:C.muted }}>{b.note}</div>
+              <div key={b} style={{ background:"#ffffff", border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 16px", boxShadow:shadow, fontWeight:600, fontSize:12, color:C.text }}>
+                {b}
               </div>
             ))}
           </div>
