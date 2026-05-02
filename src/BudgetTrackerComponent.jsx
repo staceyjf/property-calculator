@@ -131,12 +131,15 @@ const fmtD = n => "$" + (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","
 
 // ─── Sorted category groups for <select> dropdowns ───────────────────────────
 const asc = (a, b) => a.name.localeCompare(b.name);
-const LIVING_CATS    = SHEET_CATEGORIES.filter(c => !c.childcare).sort(asc);
-const CHILDCARE_CATS = SHEET_CATEGORIES.filter(c =>  c.childcare).sort(asc);
+const LIVING_CATS    = SHEET_CATEGORIES.filter(c => !c.childcare && !c.exclude).sort(asc);
+const CHILDCARE_CATS = SHEET_CATEGORIES.filter(c =>  c.childcare && !c.exclude).sort(asc);
+const EXCLUDE_CATS   = SHEET_CATEGORIES.filter(c => c.exclude);
+const QUICK_CATS     = ["Exclude", "Entertainment", "Food", "Shopping", "House", "Other", "Holidays", "Medical / Dental"];
 function CatOptions({ empty = false }) {
   return (
     <>
       {empty && <option value="">— pick category —</option>}
+      {EXCLUDE_CATS.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
       <optgroup label="Living Expenses">
         {LIVING_CATS.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
       </optgroup>
@@ -379,6 +382,7 @@ export default function BudgetTrackerComponent() {
     acc[k].push({ ...t, _i: txs.findIndex(x => x === t) });
     return acc;
   }, {});
+  Object.values(bycat).forEach(rows => rows.sort((a, b) => a.date.localeCompare(b.date)));
 
   // For multi-month, group by month
   const monthlyTotals = monthsToShow.reduce((acc, m) => {
@@ -412,7 +416,16 @@ export default function BudgetTrackerComponent() {
   const livingBudget  = livingCats.reduce((s, c) => s + effectiveBudget(c), 0);
   const ccBudget      = childcareCats.reduce((s, c) => s + effectiveBudget(c), 0);
   const uncatTotal    = fixedTotals["__uncat__"] || 0;
+  const excludedCatNames = new Set(SHEET_CATEGORIES.filter(c => c.exclude).map(c => c.name));
+  const excludeTotal  = filteredTxs.filter(t => excludedCatNames.has(t.category)).reduce((s, t) => s + t.amount, 0);
   const needsReview   = filteredTxs.filter(t => !t.category);
+  const needsReviewGroups = Object.values(
+    needsReview.reduce((acc, t) => {
+      if (!acc[t.payee]) acc[t.payee] = { payee: t.payee, upCategory: t.upCategory, txs: [] };
+      acc[t.payee].txs.push(t);
+      return acc;
+    }, {})
+  ).sort((a, b) => b.txs.reduce((s, t) => s + t.amount, 0) - a.txs.reduce((s, t) => s + t.amount, 0));
   const totalIncome   = INCOME.reduce((s, p) => s + p.monthly, 0) * budgetMultiplier;
   const totalExpenses = livingTotal + ccTotal + uncatTotal;
   const forecasted    = totalIncome - totalExpenses;
@@ -634,9 +647,9 @@ export default function BudgetTrackerComponent() {
         {/* Summary cards */}
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:12, marginBottom:16 }}>
           {[
-            { label:"Living Expenses",    actual:livingTotal,                       budget:livingBudget,             color:C.blue   },
-            { label:"Childcare & School", actual:ccTotal,                           budget:ccBudget,                 color:C.purple },
-            { label:"Grand Total",        actual:livingTotal+ccTotal+uncatTotal,    budget:livingBudget+ccBudget,    color:C.green  },
+            { label:"Living Expenses",    actual:livingTotal,                    budget:livingBudget,          color:C.blue   },
+            { label:"Childcare & School", actual:ccTotal,                        budget:ccBudget,              color:C.purple },
+            { label:"Grand Total",        actual:livingTotal+ccTotal+uncatTotal, budget:livingBudget+ccBudget, color:C.green  },
           ].map(({ label, actual, budget, color }) => {
             const diff = actual - budget; const over = diff > 0 && budget > 0;
             const pct = budget > 0 ? Math.min(actual/budget*100, 100) : 0;
@@ -656,6 +669,11 @@ export default function BudgetTrackerComponent() {
                 {budget>0 && <div style={{ fontSize:11, fontWeight:600, color: over ? C.red : color, marginBottom:6 }}>
                   {over ? `↑ ${fmt(diff)} over` : `↓ ${fmt(Math.abs(diff))} under`}
                 </div>}
+                {label === "Grand Total" && excludeTotal > 0 && (
+                  <div style={{ fontSize:10, color:C.muted, marginBottom:6 }}>
+                    {fmt(excludeTotal)} excluded from totals
+                  </div>
+                )}
                 <div style={{ background:"#f3f4f6", borderRadius:3, height:3 }}>
                   <div style={{ width:`${pct}%`, height:"100%", background: over?C.red:color, borderRadius:3, transition:"width 0.4s" }} />
                 </div>
@@ -689,22 +707,42 @@ export default function BudgetTrackerComponent() {
         {/* Uncategorised warning block */}
         {needsReview.length > 0 && (
           <div style={{ background:"#fffbeb", border:`1px solid #fcd34d`, borderRadius:8, padding:16, marginBottom:14 }}>
-            <div style={{ fontWeight:700, color:C.amber, marginBottom:10 }}>⚠️  {needsReview.length} transactions need a category</div>
-            {needsReview.map((t, i) => (
-              <div key={i} style={{ display:"flex", alignItems:"center", padding:"6px 0", borderBottom:`1px solid #f0e8c0`, gap:8, fontSize:11 }}>
-                <span style={{ color:C.muted, width:90, flexShrink:0 }}>{t.date}</span>
-                <span style={{ flex:1 }}>{t.payee}</span>
-                <span style={{ color:C.muted, fontSize:10 }}>{t.upCategory}</span>
-                <select
-                  style={{ background:"#f9fafb", border:`1px solid #e8c060`, borderRadius:6, color:C.text, padding:"3px 8px", fontSize:11, fontFamily:"inherit" }}
-                  value={t.category || ""}
-                  onChange={e => { if (!e.target.value) return; setTxs(prev => prev.map(x => x===t ? {...x, category:e.target.value} : x)); }}
-                >
-                  <CatOptions empty />
-                </select>
-                <span style={{ color:C.amber, fontWeight:700, width:72, textAlign:"right" }}>{fmtD(t.amount)}</span>
-              </div>
-            ))}
+            <div style={{ fontWeight:600, color:C.amber, marginBottom:10, fontSize:13 }}>
+              {needsReview.length} transaction{needsReview.length !== 1 ? "s" : ""} need a category
+              <span style={{ fontWeight:400, fontSize:11, marginLeft:8 }}>— grouped by payee, largest first</span>
+            </div>
+            {needsReviewGroups.map(({ payee, upCategory, txs: group }) => {
+              const groupTotal = group.reduce((s, t) => s + t.amount, 0);
+              const groupSet = new Set(group);
+              return (
+                <div key={payee} style={{ display:"flex", alignItems:"center", padding:"7px 0", borderBottom:`1px solid #f0e8c0`, gap:8, fontSize:11 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ color:C.text, fontWeight:500 }}>{payee}</div>
+                    {group.length > 1
+                      ? <div style={{ color:C.muted, fontSize:10 }}>{group.length} transactions · {group.map(t => t.date.slice(5)).join(", ")}</div>
+                      : <div style={{ color:C.muted, fontSize:10 }}>{group[0].date}{upCategory ? ` · ${upCategory}` : ""}</div>
+                    }
+                  </div>
+                  <div style={{ display:"flex", gap:4, flexWrap:"wrap", alignItems:"center" }}>
+                    {QUICK_CATS.map(cat => (
+                      <button key={cat} onClick={() => setTxs(prev => prev.map(x => groupSet.has(x) ? {...x, category:cat} : x))}
+                        style={{ background:"#fff", border:"1px solid #e5e7eb", borderRadius:4, padding:"2px 8px", fontSize:10, fontWeight:500, cursor:"pointer", color:C.text, fontFamily:"inherit", whiteSpace:"nowrap" }}>
+                        {cat}
+                      </button>
+                    ))}
+                    <select
+                      style={{ background:"#f9fafb", border:`1px solid #e8c060`, borderRadius:4, color:C.muted, padding:"2px 4px", fontSize:10, fontFamily:"inherit", cursor:"pointer" }}
+                      value=""
+                      onChange={e => { if (!e.target.value) return; const cat = e.target.value; setTxs(prev => prev.map(x => groupSet.has(x) ? {...x, category:cat} : x)); }}
+                    >
+                      <option value="">⋯</option>
+                      <CatOptions />
+                    </select>
+                  </div>
+                  <span style={{ color:C.amber, fontWeight:700, width:72, textAlign:"right", flexShrink:0 }}>{fmtD(groupTotal)}</span>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -766,6 +804,18 @@ export default function BudgetTrackerComponent() {
           <ColLabels />
           {childcareCats.map(cat => <CatRow key={cat.name} cat={cat} accent={C.purple} />)}
         </div>
+
+        {/* Excluded */}
+        {excludeTotal > 0 && (
+          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:shadow, padding:"16px 18px", marginBottom:12, opacity:0.85 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}>
+              <span style={{ fontWeight:600, fontSize:14, color:C.muted }}>Excluded from budget</span>
+              <span style={{ fontSize:12, color:C.muted }}>{fmt(excludeTotal)} not counted · re-assign below if needed</span>
+            </div>
+            <ColLabels />
+            {SHEET_CATEGORIES.filter(c => c.exclude).map(cat => <CatRow key={cat.name} cat={cat} accent={C.muted} />)}
+          </div>
+        )}
 
         {/* Sheet update panel */}
         {showSheet && (
