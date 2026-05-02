@@ -30,24 +30,29 @@ function parseUpCSV(text) {
     const upCat = row[headers[iCat]] || "";
     if (type === "transfer" && upCat.toLowerCase() === "forward") continue;
     const amt = parseFloat(row[headers[iAmt]]);
-    if (isNaN(amt) || amt >= 0) continue; // expenses are negative
+    if (isNaN(amt)) continue;
     const payee = row[headers[iPayee]] || row[headers[iDesc]] || "";
     const sheetCat = UP_TO_SHEET[upCat] || null;
     let category = sheetCat;
     if (!category) {
       for (const [key, cat] of Object.entries(PAYEE_MAPPINGS)) {
-        if (payee.toLowerCase().includes(key.toLowerCase())) {
-          category = cat;
-          break;
-        }
+        if (payee.toLowerCase().includes(key.toLowerCase())) { category = cat; break; }
       }
     }
+
+    if (amt > 0) {
+      // Refund — offset the category if recognisable, skip transfers/income
+      if (type === "transfer" || !category) continue;
+      txs.push({ date: (row[headers[iDate]] || "").substring(0, 10), payee, amount: -amt, upCategory: upCat, category, source: "Up", needsReview: false });
+      continue;
+    }
+
     txs.push({
       date: (row[headers[iDate]] || "").substring(0, 10),
-      payee: payee,
+      payee,
       amount: Math.abs(amt),
       upCategory: upCat,
-      category: category,
+      category,
       source: "Up",
       needsReview: !category,
     });
@@ -218,7 +223,16 @@ function parseAMPCSV(text) {
       continue;
     }
 
-    if (amt >= 0) continue; // skip other credits
+    // Positive = potential refund — offset category if payee is recognisable
+    if (amt > 0) {
+      const payee = extractAMPPayee(desc);
+      let category = null;
+      for (const [key, cat] of Object.entries(PAYEE_MAPPINGS)) {
+        if (desc.toLowerCase().includes(key.toLowerCase())) { category = cat; break; }
+      }
+      if (category) txs.push({ date, payee, amount: -amt, upCategory: "", category, source: "AMP", needsReview: false });
+      continue;
+    }
     if (/Transfer from/i.test(desc)) continue;
     if (/Inward swift/i.test(desc)) continue;
     if (/QANTAS MONEY CC/i.test(desc)) continue;
@@ -598,6 +612,35 @@ export default function BudgetTrackerComponent() {
   const shadow = "0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04)";
 
   // ─── Category row component ──────────────────────────────────────────────
+  function QuickCatSearch({ onSelect }) {
+    const [q, setQ] = React.useState("");
+    const matches = q.length >= 1
+      ? SHEET_CATEGORIES.filter(c => c.name.toLowerCase().includes(q.toLowerCase())).slice(0, 7)
+      : [];
+    return (
+      <div style={{ position:"relative" }}>
+        <input
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder="search…"
+          style={{ background:"#f9fafb", border:`1px solid #e8c060`, borderRadius:4, color:C.text, padding:"2px 6px", fontSize:10, fontFamily:"inherit", width:"100%", boxSizing:"border-box" }}
+        />
+        {matches.length > 0 && (
+          <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#fff", border:`1px solid ${C.border}`, borderRadius:4, boxShadow:shadow, zIndex:100, maxHeight:160, overflowY:"auto" }}>
+            {matches.map(c => (
+              <div key={c.name}
+                onMouseDown={() => { onSelect(c.name); setQ(""); }}
+                style={{ padding:"4px 8px", fontSize:10, cursor:"pointer", color:C.text, lineHeight:1.6 }}
+                onMouseEnter={e => e.currentTarget.style.background="#f3f4f6"}
+                onMouseLeave={e => e.currentTarget.style.background="transparent"}
+              >{c.name}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function CatRow({ cat, accent }) {
     const actual  = fixedTotals[cat.name] || 0;
     const rows    = bycat[cat.name] || [];
@@ -660,7 +703,10 @@ export default function BudgetTrackerComponent() {
                 >
                   <CatOptions />
                 </select>
-                <span style={{ color:C.text, fontWeight:600, width:72, textAlign:"right" }}>{fmtD(t.amount)}</span>
+                <span style={{ color: t.amount < 0 ? C.green : C.text, fontWeight:600, width:72, textAlign:"right" }}>
+                  {t.amount < 0 ? `−${fmtD(Math.abs(t.amount))}` : fmtD(t.amount)}
+                  {t.amount < 0 && <span style={{ fontSize:9, fontWeight:400, marginLeft:3 }}>refund</span>}
+                </span>
               </div>
             ))}
           </div>
@@ -926,21 +972,14 @@ export default function BudgetTrackerComponent() {
                       : <div style={{ color:C.muted, fontSize:10 }}>{group[0].date}{upCategory ? ` · ${upCategory}` : ""}</div>
                     }
                   </div>
-                  <div style={{ display:"flex", flexDirection:"column", gap:3, alignItems:"stretch", flexShrink:0, width:100 }}>
+                  <div style={{ display:"flex", flexDirection:"column", gap:3, alignItems:"stretch", flexShrink:0, width:110 }}>
                     {QUICK_CATS.map(cat => (
                       <button key={cat} onClick={() => setTxs(prev => prev.map(x => groupSet.has(x) ? {...x, category:cat} : x))}
                         style={{ background:"#fff", border:"1px solid #e5e7eb", borderRadius:4, padding:"2px 8px", fontSize:10, fontWeight:500, cursor:"pointer", color:C.text, fontFamily:"inherit", whiteSpace:"nowrap", textAlign:"center" }}>
                         {cat}
                       </button>
                     ))}
-                    <select
-                      value=""
-                      onChange={e => { if (!e.target.value) return; setTxs(prev => prev.map(x => groupSet.has(x) ? {...x, category:e.target.value} : x)); }}
-                      style={{ background:"#f9fafb", border:`1px solid #e8c060`, borderRadius:4, color:C.muted, padding:"2px 4px", fontSize:10, fontFamily:"inherit", cursor:"pointer", width:"100%" }}
-                    >
-                      <option value="">more…</option>
-                      <CatOptions />
-                    </select>
+                    <QuickCatSearch onSelect={cat => setTxs(prev => prev.map(x => groupSet.has(x) ? {...x, category:cat} : x))} />
                   </div>
                   <span style={{ color:C.amber, fontWeight:700, width:72, textAlign:"right", flexShrink:0, paddingTop:2 }}>{fmtD(groupTotal)}</span>
                 </div>
