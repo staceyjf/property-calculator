@@ -55,6 +55,113 @@ function parseUpCSV(text) {
   return txs;
 }
 
+// ─── Macquarie CSV parser ─────────────────────────────────────────────────────
+const MAC_MONTHS = { Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12 };
+function parseMacDate(str) {
+  const m = str.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
+  if (!m) return str;
+  return `${m[3]}-${String(MAC_MONTHS[m[2]] || 1).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
+}
+
+function parseMacCSV(text) {
+  const result = Papa.parse(text.replace(/^﻿/, ""), {
+    header: true, skipEmptyLines: true,
+    transformHeader: h => h.trim(),
+  });
+  const fields = result.meta.fields || [];
+  if (!fields.includes("Transaction Date") || !fields.includes("Debit") || !fields.includes("Credit")) return null;
+
+  const income = {};
+  const txs = [];
+
+  for (const row of result.data) {
+    const date = parseMacDate((row["Transaction Date"] || "").trim());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const monthKey = date.slice(0, 7);
+
+    const details = (row["Details"] || "").trim();
+    const subcat  = (row["Subcategory"] || "").trim();
+    const credit  = parseFloat((row["Credit"] || "").replace(/[,$]/g, ""));
+    const debit   = parseFloat((row["Debit"]  || "").replace(/[,$]/g, ""));
+
+    // Salary credit → actual income
+    if (!isNaN(credit) && credit > 0 && (subcat === "Salary" || /^Salary from/i.test(details))) {
+      income[monthKey] = (income[monthKey] || 0) + credit;
+      continue;
+    }
+
+    // Skip all other credits and internal transfer-outs
+    if (isNaN(debit) || debit <= 0) continue;
+    if (/Transfer|Funds Transfer/i.test(details)) continue;
+
+    // Any real expenses
+    let category = null;
+    for (const [key, cat] of Object.entries(PAYEE_MAPPINGS)) {
+      if (details.toLowerCase().includes(key.toLowerCase())) { category = cat; break; }
+    }
+    txs.push({ date, payee: details, amount: debit, upCategory: "", category, source: "Macquarie", needsReview: !category });
+  }
+  return { txs, income };
+}
+
+// ─── CommBank CSV parser ──────────────────────────────────────────────────────
+function extractCBAPayee(desc) {
+  return desc
+    .replace(/^Direct Debit \d+\s+/, "")
+    .replace(/^Direct Credit \d+\s+/, "")
+    .replace(/^PayTo\s+/, "")
+    .replace(/^Fast Transfer (?:To|From)\s+\S+\s+/, "")
+    .replace(/\s+\d{10,}$/, "")  // trailing long reference numbers
+    .trim();
+}
+
+function parseCBACSV(text) {
+  const result = Papa.parse(text.replace(/^﻿/, ""), { skipEmptyLines: true });
+  const first = result.data[0];
+  if (!first || !/^\d{2}\/\d{2}\/\d{4}$/.test((first[0] || "").trim())) return null;
+
+  const txs = [];
+  const income = {}; // "YYYY-MM" -> total salary received
+
+  for (const row of result.data) {
+    if (row.length < 3) continue;
+    const rawDate = (row[0] || "").trim();
+    if (!/^\d{2}\/\d{2}\/\d{4}$/.test(rawDate)) continue;
+
+    const amt = parseFloat((row[1] || "").replace(/[+,\s]/g, ""));
+    if (isNaN(amt)) continue;
+
+    const desc = (row[2] || "").trim();
+    const [dd, mm, yyyy] = rawDate.split("/");
+    const date = `${yyyy}-${mm}-${dd}`;
+    const monthKey = `${yyyy}-${mm}`;
+
+    // Capture salary as actual income (positive, labelled "Salary")
+    if (amt > 0 && /^Salary\b/i.test(desc)) {
+      income[monthKey] = (income[monthKey] || 0) + amt;
+      continue;
+    }
+
+    if (amt >= 0) continue; // skip other credits
+
+    // Skip internal/investment transfers
+    if (/Transfer to CBA A\/c/i.test(desc)) continue;
+    if (/Transfer To.*fanner.*CommBank App/i.test(desc)) continue;
+    if (/Transfer To andrew william fanner/i.test(desc)) continue;
+    if (/Superhero/i.test(desc)) continue;
+    if (/PayID S J FANNER/i.test(desc)) continue;
+    if (/Fast Transfer From/i.test(desc)) continue;
+
+    const payee = extractCBAPayee(desc);
+    let category = null;
+    for (const [key, cat] of Object.entries(PAYEE_MAPPINGS)) {
+      if (payee.toLowerCase().includes(key.toLowerCase())) { category = cat; break; }
+    }
+    txs.push({ date, payee, amount: Math.abs(amt), upCategory: "", category, source: "CBA", needsReview: !category });
+  }
+  return { txs, income };
+}
+
 // ─── AMP CSV parser ───────────────────────────────────────────────────────────
 const AMP_MONTHS = { Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12 };
 
@@ -92,10 +199,26 @@ function parseAMPCSV(text) {
   });
 
   const txs = [];
+  const income = {};
   for (const row of result.data) {
     const desc = (row.Description || "").trim();
     if (!desc) continue;
     if (/^PENDING/i.test(desc)) continue;
+
+    const amtStr = (row.Amount || "").replace(/[$,]/g, "");
+    const amt = parseFloat(amtStr);
+    if (isNaN(amt)) continue;
+
+    const date = parseAMPDate((row.Date || "").trim());
+    const monthKey = date.slice(0, 7);
+
+    // Capture Stacey's salary from Opus Recruitment (direct credit + inward swift)
+    if (amt > 0 && /OPUS RECRUITMENT/i.test(desc)) {
+      income[monthKey] = (income[monthKey] || 0) + amt;
+      continue;
+    }
+
+    if (amt >= 0) continue; // skip other credits
     if (/Transfer from/i.test(desc)) continue;
     if (/Inward swift/i.test(desc)) continue;
     if (/QANTAS MONEY CC/i.test(desc)) continue;
@@ -103,17 +226,13 @@ function parseAMPCSV(text) {
     if (/Transfer to andrew fanner/i.test(desc)) continue;
     if (/Transfer to PayID S J FANNER/i.test(desc)) continue;
 
-    const amtStr = (row.Amount || "").replace(/[$,]/g, "");
-    const amt = parseFloat(amtStr);
-    if (isNaN(amt) || amt >= 0) continue;
-
     let category = null;
     for (const [key, cat] of Object.entries(PAYEE_MAPPINGS)) {
       if (desc.toLowerCase().includes(key.toLowerCase())) { category = cat; break; }
     }
 
     txs.push({
-      date:        parseAMPDate((row.Date || "").trim()),
+      date,
       payee:       extractAMPPayee(desc),
       amount:      Math.abs(amt),
       upCategory:  "",
@@ -122,12 +241,18 @@ function parseAMPCSV(text) {
       needsReview: !category,
     });
   }
-  return txs;
+  return { txs, income };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt  = n => "$" + Math.round(n || 0).toLocaleString();
 const fmtD = n => "$" + (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+// Sums income maps so two files covering the same month (e.g. Opus partial + Macquarie) add correctly
+function mergeIncome(a, b) {
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = (out[k] || 0) + v;
+  return out;
+}
 
 // ─── Sorted category groups for <select> dropdowns ───────────────────────────
 const asc = (a, b) => a.name.localeCompare(b.name);
@@ -162,6 +287,7 @@ export default function BudgetTrackerComponent() {
   const [expanded, setExpanded]     = useState(null);
   const [showSheet, setShowSheet]   = useState(false);
   const [drag, setDrag]             = useState(false);
+  const [incomeActuals, setIncomeActuals] = useState({});
   const [googleToken, setGoogleToken] = useState(null);
   const [sheetStatus, setSheetStatus] = useState(null); // null|'writing'|'done'|{error}
   const [driveError, setDriveError]     = useState(null);
@@ -171,15 +297,43 @@ export default function BudgetTrackerComponent() {
   const processFiles = async (files) => {
     setStep("parsing"); setLog(["Starting…"]);
     let all = [];
+    let newIncomeActuals = {};
 
     for (const file of Array.from(files)) {
       const name = file.name.toLowerCase();
       if (name.endsWith(".csv")) {
         setLog(l => [...l, `📄 Parsing ${file.name}…`]);
         const text = await file.text();
-        const ampRows = parseAMPCSV(text);
-        const rows  = ampRows !== null ? ampRows : parseUpCSV(text);
-        const label = ampRows !== null ? "AMP" : "Up Bank";
+        const cbaResult = parseCBACSV(text);
+        const macResult = cbaResult === null ? parseMacCSV(text) : null;
+        let rows, label;
+        if (cbaResult !== null) {
+          rows = cbaResult.txs;
+          label = "CommBank";
+          newIncomeActuals.Andrew = mergeIncome(newIncomeActuals.Andrew || {}, cbaResult.income);
+          const months = Object.keys(cbaResult.income);
+          if (months.length) setLog(l => [...l, `💰 CommBank: Andrew's salary found for ${months.join(", ")}`]);
+        } else if (macResult !== null) {
+          rows = macResult.txs;
+          label = "Macquarie";
+          newIncomeActuals.Stacey = mergeIncome(newIncomeActuals.Stacey || {}, macResult.income);
+          const months = Object.keys(macResult.income);
+          if (months.length) setLog(l => [...l, `💰 Macquarie: Stacey's salary found for ${months.join(", ")}`]);
+        } else {
+          const ampResult = parseAMPCSV(text);
+          if (ampResult !== null) {
+            rows = ampResult.txs;
+            label = "AMP";
+            const months = Object.keys(ampResult.income);
+            if (months.length) {
+              newIncomeActuals.Stacey = mergeIncome(newIncomeActuals.Stacey || {}, ampResult.income);
+              setLog(l => [...l, `💰 AMP: Stacey's Opus salary found for ${months.join(", ")}`]);
+            }
+          } else {
+            rows = parseUpCSV(text);
+            label = "Up Bank";
+          }
+        }
         const uncat = rows.filter(r => !r.category).length;
         setLog(l => [...l,
           `✅ ${label}: ${rows.length} expenses parsed`,
@@ -188,6 +342,7 @@ export default function BudgetTrackerComponent() {
         all = [...all, ...rows];
       }
     }
+    setIncomeActuals(newIncomeActuals);
 
     // Filter to selected month/year later in derived state
     setLog(l => [...l, ``, `📊 ${all.length} transactions loaded`, all.length > 0 ? `ℹ️  From ${Math.min(...all.map(t => new Date(t.date).getTime()))} to ${Math.max(...all.map(t => new Date(t.date).getTime()))}` : ""]);
@@ -428,8 +583,12 @@ export default function BudgetTrackerComponent() {
   ).sort((a, b) => b.txs.reduce((s, t) => s + t.amount, 0) - a.txs.reduce((s, t) => s + t.amount, 0));
   const totalIncome = monthsToShow.reduce((sum, m) => {
     const key = `${year}-${String(m + 1).padStart(2, "0")}`;
-    return sum + INCOME.reduce((s, p) => s + (p.monthlyOverrides?.[key] ?? p.monthly), 0);
+    return sum + INCOME.reduce((s, p) => {
+      const actual = incomeActuals[p.name]?.[key];
+      return s + (actual !== undefined ? actual : (p.monthlyOverrides?.[key] ?? p.monthly));
+    }, 0);
   }, 0);
+  const hasActualIncome = Object.keys(incomeActuals).length > 0;
   const totalExpenses = livingTotal + ccTotal + uncatTotal;
   const forecasted    = totalIncome - totalExpenses;
 
@@ -538,40 +697,79 @@ export default function BudgetTrackerComponent() {
   );
 
   // ─────────────────────────────────────────────────────────────────────────
+  const SUPPORTED_BANKS = [
+    { name:"Up Bank",   note:"Spending account CSV exports"    },
+    { name:"AMP",       note:"Transaction account CSV exports" },
+    { name:"CommBank",  note:"Andrew's salary account"         },
+    { name:"Macquarie", note:"Stacey's salary account"         },
+  ];
+
   if (step === "upload") return (
-    <div style={{ fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", background:C.bg, minHeight:"100vh", color:C.text, padding:24, fontSize:13 }}>
-      <div style={{ maxWidth:640, margin:"0 auto" }}>
-        <div style={{ paddingBottom:20, marginBottom:20, borderBottom:`1px solid ${C.border}` }}>
-          <div style={{ fontSize:22, fontWeight:700, color:C.text, letterSpacing:"-0.025em" }}>Fanner's Budget Tracker</div>
-          <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>Up Bank + AMP — budget reconciliation</div>
+    <div style={{ fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", background:C.bg, minHeight:"100vh", color:C.text, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 24px" }}>
+      <div style={{ width:"100%", maxWidth:520 }}>
+
+        {/* Header */}
+        <div style={{ textAlign:"center", marginBottom:40 }}>
+          <div style={{ fontSize:24, fontWeight:700, color:C.text, letterSpacing:"-0.025em" }}>Fanner's Budget Tracker</div>
+          <div style={{ fontSize:13, color:C.muted, marginTop:6 }}>Household budget reconciliation</div>
         </div>
 
+        {/* Drop zone */}
         <div
-          style={{ border:`2px dashed ${drag ? C.blue : "#e5e7eb"}`, borderRadius:14, padding:"36px 24px", textAlign:"center", cursor:"pointer", background: drag?"#eff6ff":"transparent", transition:"all 0.15s" }}
+          style={{ border:`2px dashed ${drag ? C.blue : "#d1d5db"}`, borderRadius:16, padding:"48px 32px", textAlign:"center", cursor:"pointer", background: drag?"#eff6ff":"#ffffff", transition:"all 0.15s", boxShadow:shadow, marginBottom:20 }}
           onDrop={e => { e.preventDefault(); setDrag(false); processFiles(e.dataTransfer.files); }}
           onDragOver={e => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
           onClick={() => fileRef.current?.click()}
         >
-          <div style={{ fontSize:30, marginBottom:10, opacity:0.4 }}>↑</div>
-          <div style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:4 }}>Drop files here or click to browse</div>
-          <div style={{ fontSize:12, color:C.muted }}>Up Bank CSV · AMP Bank CSV</div>
-          <input ref={fileRef} type="file" accept=".csv" multiple style={{ display:"none" }} onChange={e => processFiles(e.target.files)} />
+          <div style={{ fontSize:32, marginBottom:12, opacity:0.25 }}>↑</div>
+          <div style={{ fontSize:15, fontWeight:600, color:C.text, marginBottom:4 }}>Drop CSV files here or click to browse</div>
+          <div style={{ fontSize:12, color:C.muted }}>You can drop multiple files at once</div>
+        </div>
 
-          <div style={{ display:"flex", alignItems:"center", gap:10, margin:"20px 0 16px" }}>
-            <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
-            <span style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em" }}>or</span>
-            <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
-          </div>
+        <input ref={fileRef} type="file" accept=".csv" multiple style={{ display:"none" }} onChange={e => processFiles(e.target.files)} />
 
+        {/* Or + Drive */}
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
+          <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
+          <span style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em" }}>or</span>
+          <div style={{ flex:1, height:1, background:"#e5e7eb" }} />
+        </div>
+        <div style={{ textAlign:"center", marginBottom:40 }}>
           <button
             onClick={e => { e.stopPropagation(); openDrivePicker(); }}
-            style={{ background:"transparent", color:C.text, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 18px", fontSize:12, fontWeight:500, cursor:"pointer", fontFamily:"inherit" }}
+            style={{ background:"transparent", color:C.text, border:`1px solid ${C.border}`, borderRadius:6, padding:"9px 22px", fontSize:12, fontWeight:500, cursor:"pointer", fontFamily:"inherit" }}
           >
             Google Drive{!googleToken && <span style={{ color:C.muted, fontWeight:400, marginLeft:6, fontSize:11 }}>· sign in required</span>}
           </button>
           {driveError && <div style={{ fontSize:11, color:C.red, marginTop:8 }}>❌ {driveError}</div>}
         </div>
+
+        {/* Supported banks */}
+        <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:28, marginBottom:24 }}>
+          <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:14 }}>Supported banks</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            {SUPPORTED_BANKS.map(b => (
+              <div key={b.name} style={{ background:"#ffffff", border:`1px solid ${C.border}`, borderRadius:8, padding:"10px 14px", boxShadow:shadow }}>
+                <div style={{ fontWeight:600, fontSize:12, color:C.text, marginBottom:2 }}>{b.name}</div>
+                <div style={{ fontSize:11, color:C.muted }}>{b.note}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize:11, color:C.muted, marginTop:12, textAlign:"center" }}>Format detected automatically — no configuration needed</div>
+        </div>
+
+        {/* Parse log (persists after last import) */}
+        {log.filter(Boolean).length > 0 && (
+          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:24 }}>
+            <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>Last import log</div>
+            <div style={{ background:"#f3f4f6", borderRadius:8, padding:"12px 14px", fontFamily:"'SF Mono','Fira Code',monospace", fontSize:11, lineHeight:1.9 }}>
+              {log.filter(Boolean).map((l,i) => (
+                <div key={i} style={{ color: l.startsWith("✅")?C.green:l.startsWith("❌")?C.red:l.startsWith("⚠️")?C.amber:l.startsWith("📊")||l.startsWith("ℹ️")||l.startsWith("💰")?C.blue:C.muted }}>{l}</div>
+              ))}
+            </div>
+          </div>
+        )}
 
       </div>
     </div>
@@ -690,7 +888,9 @@ export default function BudgetTrackerComponent() {
             </div>
             <div style={{ display:"flex", gap:12, marginBottom:6 }}>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>Income</div>
+                <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:2 }}>
+                  Income{hasActualIncome && <span style={{ marginLeft:4, color:C.blue, fontWeight:600 }}>· actual</span>}
+                </div>
                 <div style={{ fontSize:18, fontWeight:700, color:C.muted }}>{fmt(totalIncome)}</div>
               </div>
               <div style={{ flex:1 }}>
