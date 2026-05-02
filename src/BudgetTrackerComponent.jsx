@@ -134,7 +134,7 @@ const asc = (a, b) => a.name.localeCompare(b.name);
 const LIVING_CATS    = SHEET_CATEGORIES.filter(c => !c.childcare && !c.exclude).sort(asc);
 const CHILDCARE_CATS = SHEET_CATEGORIES.filter(c =>  c.childcare && !c.exclude).sort(asc);
 const EXCLUDE_CATS   = SHEET_CATEGORIES.filter(c => c.exclude);
-const QUICK_CATS     = ["Exclude", "Entertainment", "Food", "Shopping", "House", "Other", "Holidays", "Medical / Dental"];
+const QUICK_CATS     = ["Exclude", "Entertainment"];
 function CatOptions({ empty = false }) {
   return (
     <>
@@ -426,7 +426,10 @@ export default function BudgetTrackerComponent() {
       return acc;
     }, {})
   ).sort((a, b) => b.txs.reduce((s, t) => s + t.amount, 0) - a.txs.reduce((s, t) => s + t.amount, 0));
-  const totalIncome   = INCOME.reduce((s, p) => s + p.monthly, 0) * budgetMultiplier;
+  const totalIncome = monthsToShow.reduce((sum, m) => {
+    const key = `${year}-${String(m + 1).padStart(2, "0")}`;
+    return sum + INCOME.reduce((s, p) => s + (p.monthlyOverrides?.[key] ?? p.monthly), 0);
+  }, 0);
   const totalExpenses = livingTotal + ccTotal + uncatTotal;
   const forecasted    = totalIncome - totalExpenses;
 
@@ -715,7 +718,7 @@ export default function BudgetTrackerComponent() {
               const groupTotal = group.reduce((s, t) => s + t.amount, 0);
               const groupSet = new Set(group);
               return (
-                <div key={payee} style={{ display:"flex", alignItems:"center", padding:"7px 0", borderBottom:`1px solid #f0e8c0`, gap:8, fontSize:11 }}>
+                <div key={payee} style={{ display:"flex", alignItems:"flex-start", padding:"7px 0", borderBottom:`1px solid #f0e8c0`, gap:8, fontSize:11 }}>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ color:C.text, fontWeight:500 }}>{payee}</div>
                     {group.length > 1
@@ -723,23 +726,23 @@ export default function BudgetTrackerComponent() {
                       : <div style={{ color:C.muted, fontSize:10 }}>{group[0].date}{upCategory ? ` · ${upCategory}` : ""}</div>
                     }
                   </div>
-                  <div style={{ display:"flex", gap:4, flexWrap:"wrap", alignItems:"center" }}>
+                  <div style={{ display:"flex", flexDirection:"column", gap:3, alignItems:"stretch", flexShrink:0, width:100 }}>
                     {QUICK_CATS.map(cat => (
                       <button key={cat} onClick={() => setTxs(prev => prev.map(x => groupSet.has(x) ? {...x, category:cat} : x))}
-                        style={{ background:"#fff", border:"1px solid #e5e7eb", borderRadius:4, padding:"2px 8px", fontSize:10, fontWeight:500, cursor:"pointer", color:C.text, fontFamily:"inherit", whiteSpace:"nowrap" }}>
+                        style={{ background:"#fff", border:"1px solid #e5e7eb", borderRadius:4, padding:"2px 8px", fontSize:10, fontWeight:500, cursor:"pointer", color:C.text, fontFamily:"inherit", whiteSpace:"nowrap", textAlign:"center" }}>
                         {cat}
                       </button>
                     ))}
                     <select
-                      style={{ background:"#f9fafb", border:`1px solid #e8c060`, borderRadius:4, color:C.muted, padding:"2px 4px", fontSize:10, fontFamily:"inherit", cursor:"pointer" }}
                       value=""
-                      onChange={e => { if (!e.target.value) return; const cat = e.target.value; setTxs(prev => prev.map(x => groupSet.has(x) ? {...x, category:cat} : x)); }}
+                      onChange={e => { if (!e.target.value) return; setTxs(prev => prev.map(x => groupSet.has(x) ? {...x, category:e.target.value} : x)); }}
+                      style={{ background:"#f9fafb", border:`1px solid #e8c060`, borderRadius:4, color:C.muted, padding:"2px 4px", fontSize:10, fontFamily:"inherit", cursor:"pointer", width:"100%" }}
                     >
-                      <option value="">⋯</option>
+                      <option value="">more…</option>
                       <CatOptions />
                     </select>
                   </div>
-                  <span style={{ color:C.amber, fontWeight:700, width:72, textAlign:"right", flexShrink:0 }}>{fmtD(groupTotal)}</span>
+                  <span style={{ color:C.amber, fontWeight:700, width:72, textAlign:"right", flexShrink:0, paddingTop:2 }}>{fmtD(groupTotal)}</span>
                 </div>
               );
             })}
